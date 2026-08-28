@@ -1,3 +1,4 @@
+import type { FastifyRequest } from "fastify";
 import { z } from "zod";
 
 export function validateRequest({
@@ -7,18 +8,20 @@ export function validateRequest({
   params?: z.ZodType;
   body?: z.ZodType;
 }) {
-  return async (request: {
-    params: unknown;
-    body: unknown;
-  }) => {
+  return async (request: FastifyRequest) => {
     if (params) {
       request.params = params.parse(request.params);
-      console.log('validation params pass i guess')
+      request.log.info(
+        { method: request.method, url: request.url },
+        "Request params validation passed");
     }
 
     if (body) {
       request.body = body.parse(request.body);
-      console.log('validation body pass i guess')
+      request.log.info(
+        { method: request.method, url: request.url },
+        "Request body validation passed",
+      );
     }
   };
 }
