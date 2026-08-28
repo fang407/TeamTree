@@ -45,4 +45,70 @@ describe("HTTP boundary", () => {
     expect(oversized.statusCode).toBe(413);
     await app.close();
   });
+
+  it("rejects an invalid agent UUID", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/agents/not-a-uuid",
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects an empty agent name", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { "content-type": "application/json" },
+      payload: { name: "   " },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects a missing request body", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects empty message content", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000/messages",
+      headers: { "content-type": "application/json" },
+      payload: { content: "\t  " },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects unknown request fields", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { "content-type": "application/json" },
+      payload: { name: "demo", unexpected: true },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
 });
