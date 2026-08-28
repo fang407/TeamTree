@@ -1,6 +1,29 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "blocked";
+
 export type MessageRole = "user" | "assistant";
+
+export type SafetyBoundary = "API" | "SERVICE" | "RUNNER";
+
+export type SafetyDecision = "ALLOW" | "BLOCK" | "REDACT" | "CANCELLED";
+
+export interface SafetyEvent {
+  id: string;
+  runId?: string;
+  userId?: string;
+  agentId?: string;
+  boundary: SafetyBoundary;
+  decision: SafetyDecision;
+  reason: string;
+  timestamp: string;
+}
 
 export interface Agent {
   id: string;
@@ -48,6 +71,7 @@ export interface Database {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  safetyEvents: SafetyEvent[];
 }
 
 export interface CreateAgentInput {
