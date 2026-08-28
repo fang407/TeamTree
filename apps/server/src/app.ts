@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import { validateRequest } from "./validation.js";
 
 const agentIdParams = z
   .object({ id: z.string().uuid() })
@@ -85,11 +86,19 @@ export async function createApp(
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
-  app.post("/api/agents", async (request, reply) => {
-    const body = createAgentBody.parse(request.body);
-    const agent = await service.createAgent(body);
-    return reply.code(201).send({ agent });
-  });
+  app.post(
+    "/api/agents",
+    {
+      preValidation: validateRequest({
+        body: createAgentBody,
+      }),
+    },
+    async (request, reply) => {
+      const body = createAgentBody.parse(request.body);
+      const agent = await service.createAgent(body);
+      return reply.code(201).send({ agent });
+    }
+  );
 
   app.get("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
