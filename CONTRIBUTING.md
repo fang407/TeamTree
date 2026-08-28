@@ -1,7 +1,7 @@
 # Contributing
 
 Keep changes focused, reproducible, and suitable for a three-day student
-hackathon.
+hackathon. test_local_push
 
 ## Setup
 
