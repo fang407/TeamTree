@@ -58,6 +58,18 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
+  it("rejects a missing agent UUID", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/agents/",
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  })
+
   it("rejects an empty agent name", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
 
