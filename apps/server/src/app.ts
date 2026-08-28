@@ -8,20 +8,31 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 
-const agentIdParams = z.object({ id: z.string().uuid() });
-const runIdParams = z.object({ id: z.string().uuid() });
-const createAgentBody = z.object({
-  name: z.string().trim().min(1).max(80),
-  description: z.string().max(500).optional(),
-  instructions: z.string().max(10_000).optional(),
-});
-const updateAgentBody = createAgentBody.partial().refine(
-  (value) => Object.keys(value).length > 0,
-  "At least one field is required",
+const agentIdParams = z
+  .object({ id: z.string().uuid() })
+  .strict();
+const runIdParams = z
+  .object({ id: z.string().uuid() })
+  .strict();
+const createAgentBody = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    description: z.string().max(500).optional(),
+    instructions: z.string().max(10_000).optional(),
+  })
+  .strict();
+const updateAgentBody = createAgentBody
+  .partial()
+  .strict()
+  .refine(
+    (value) => Object.keys(value).length > 0,
+    "At least one field is required",
 );
-const messageBody = z.object({
-  content: z.string().trim().min(1).max(50_000),
-});
+const messageBody = z
+  .object({
+    content: z.string().trim().min(1).max(50_000),
+  })
+  .strict();
 
 export async function createApp(
   config: AppConfig,
