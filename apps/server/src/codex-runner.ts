@@ -5,12 +5,23 @@ import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
+  RunnerSafetyEvent,
   RunUsage,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+
+interface ActiveCodex {
+  child: ChildProcess;
+  cancelled: boolean;
+  timedOut: boolean;
+  outputExceeded: boolean;
+  settled: Promise<void>;
+  forceKillTimer: NodeJS.Timeout | null;
+  emitSafetyEvent: (event: RunnerSafetyEvent) => Promise<void>;
+}
 
 export interface ParsedEvents {
   messages: string[];
@@ -87,17 +98,7 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
 }
 
 export class CodexRunner implements AgentRunner {
-  private readonly active = new Map<
-    string,
-    {
-      child: ChildProcess;
-      cancelled: boolean;
-      timedOut: boolean;
-      outputExceeded: boolean;
-      settled: Promise<void>;
-      forceKillTimer: NodeJS.Timeout | null;
-    }
-  >();
+  private readonly active = new Map<string, ActiveCodex>();
 
   constructor(private readonly config: AppConfig) {}
 
@@ -119,6 +120,10 @@ export class CodexRunner implements AgentRunner {
       return false;
     }
     active.cancelled = true;
+    await active.emitSafetyEvent({
+      decision: "CANCELLED",
+      reason: "User stopped execution",
+    });
     this.terminate(active);
     await active.settled;
     return true;
@@ -146,8 +151,10 @@ export class CodexRunner implements AgentRunner {
       outputExceeded: false,
       settled,
       forceKillTimer: null as NodeJS.Timeout | null,
+      emitSafetyEvent: (event: RunnerSafetyEvent) => this.emitSafetyEvent(request, event),
     };
     this.active.set(request.agentId, active);
+    await active.emitSafetyEvent({ decision: "ALLOW", reason: "Execution started" });
 
     const parsed: ParsedEvents = {
       messages: [],
@@ -162,7 +169,13 @@ export class CodexRunner implements AgentRunner {
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
       if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
+        if (!active.outputExceeded) {
+          active.outputExceeded = true;
+          void active.emitSafetyEvent({
+            decision: "BLOCK",
+            reason: "Output limit exceeded",
+          });
+        }
         this.terminate(active);
         return;
       }
@@ -185,7 +198,12 @@ export class CodexRunner implements AgentRunner {
     child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
 
     const timeout = setTimeout(() => {
+      if (active.timedOut) return;
       active.timedOut = true;
+      void active.emitSafetyEvent({
+        decision: "CANCELLED",
+        reason: "Timeout exceeded",
+      });
       this.terminate(active);
     }, this.config.codexTimeoutMs);
     timeout.unref();
@@ -236,6 +254,17 @@ export class CodexRunner implements AgentRunner {
     if (!active.forceKillTimer) {
       active.forceKillTimer = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
       active.forceKillTimer.unref();
+    }
+  }
+
+  private async emitSafetyEvent(
+    request: RunnerRequest,
+    event: RunnerSafetyEvent,
+  ): Promise<void> {
+    try {
+      await request.onSafetyEvent?.(event);
+    } catch {
+      // Execution safety must not depend on audit-store availability.
     }
   }
 

@@ -190,6 +190,15 @@ export async function createApp(
     }
   );
 
+  app.get(
+    "/api/runs/:id/safety-events",
+    { preValidation: validateRequest({ params: runIdParams }) },
+    async (request) => {
+      const { id } = runIdParams.parse(request.params);
+      return { events: service.getSafetyEvents(id) };
+    },
+  );
+
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {

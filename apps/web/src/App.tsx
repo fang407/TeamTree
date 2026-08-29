@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import { RunControls } from "./components/RunControls";
+import { SafetyEvents } from "./components/SafetyEvents";
+import { SafetyStatus } from "./components/SafetyStatus";
+import type { Agent, AgentRun, Message, SafetyEvent, SystemInfo } from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -20,6 +23,18 @@ function formatTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatDuration(
+  startedAt: string | null,
+  completedAt: string | null,
+  currentTime: number,
+): string {
+  if (!startedAt) return "Not started";
+  const endTime = completedAt ? new Date(completedAt).getTime() : currentTime;
+  const seconds = Math.max(0, Math.floor((endTime - new Date(startedAt).getTime()) / 1000));
+  if (seconds < 60) return seconds + "s";
+  return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
 }
 
 function StatusPill({ status }: { status: Agent["status"] }) {
@@ -45,6 +60,8 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [safetyEvents, setSafetyEvents] = useState<SafetyEvent[]>([]);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -77,6 +94,11 @@ export default function App() {
     }
   }, []);
 
+  const refreshSafetyEvents = useCallback(async (runId: string) => {
+    const result = await api.safetyEvents(runId);
+    setSafetyEvents(result.events);
+  }, []);
+
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
@@ -98,16 +120,18 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setSafetyEvents([]);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
       return;
     }
     void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
-      .then(([, result]) => {
+      .then(async ([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
+        if (latest) await refreshSafetyEvents(latest.id);
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
@@ -117,7 +141,7 @@ export default function App() {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
-  }, [refreshMessages, selectedId]);
+  }, [refreshMessages, refreshSafetyEvents, selectedId]);
 
   useEffect(() => {
     if (selected) {
@@ -132,6 +156,13 @@ export default function App() {
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
+
+  useEffect(() => {
+    if (!activeRun || !["queued", "running"].includes(activeRun.status)) return;
+    setCurrentTime(Date.now());
+    const interval = window.setInterval(() => setCurrentTime(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [activeRun?.id, activeRun?.status]);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -208,8 +239,9 @@ export default function App() {
       while (mountedRef.current) {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
-        const result = await api.run(runId);
+        const [result, eventResult] = await Promise.all([api.run(runId), api.safetyEvents(runId)]);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
+        if (selectedIdRef.current === agentId) setSafetyEvents(eventResult.events);
         if (!["queued", "running"].includes(result.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
@@ -231,6 +263,7 @@ export default function App() {
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
+        setSafetyEvents([]);
       }
       setAgents((current) =>
         current.map((agent) =>
@@ -242,6 +275,20 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : String(reason));
       setActiveRun(null);
       await refreshAgents();
+    }
+  };
+
+  const stopRun = async () => {
+    if (!selected || !activeRun || !["queued", "running"].includes(activeRun.status)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.stopAgent(selected.id);
+      await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -399,6 +446,7 @@ export default function App() {
                 <div className="header-title-row">
                   <h1>{selected.name}</h1>
                   <StatusPill status={selected.status} />
+                  <SafetyStatus run={activeRun} events={safetyEvents} />
                 </div>
                 <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
               </div>
@@ -477,7 +525,8 @@ export default function App() {
               </form>
             )}
 
-            <section className="playground">
+            <div className="agent-workspace">
+              <section className="playground">
               <div className="playground-topbar">
                 <div>
                   <span className="eyebrow">Playground</span>
@@ -581,7 +630,59 @@ export default function App() {
                   </button>
                 </div>
               </form>
-            </section>
+              </section>
+
+              <aside className="safety-panel">
+                <div className="safety-panel-heading">
+                  <span className="eyebrow">Current run</span>
+                  <SafetyStatus run={activeRun} events={safetyEvents} />
+                </div>
+                <dl className="run-details">
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{activeRun?.status ?? "Idle"}</dd>
+                  </div>
+                  <div>
+                    <dt>Run ID</dt>
+                    <dd className="run-id">{activeRun?.id ?? "No active run"}</dd>
+                  </div>
+                  <div>
+                    <dt>Agent</dt>
+                    <dd>{selected.name}</dd>
+                  </div>
+                  <div>
+                    <dt>Started</dt>
+                    <dd>{activeRun?.startedAt ? formatTime(activeRun.startedAt) : "Not started"}</dd>
+                  </div>
+                  <div>
+                    <dt>Duration</dt>
+                    <dd>{formatDuration(activeRun?.startedAt ?? null, activeRun?.completedAt ?? null, currentTime)}</dd>
+                  </div>
+                  <div>
+                    <dt>Steps</dt>
+                    <dd className="run-detail-unavailable">Not reported</dd>
+                  </div>
+                  <div>
+                    <dt>Tool calls</dt>
+                    <dd className="run-detail-unavailable">Not reported</dd>
+                  </div>
+                  <div>
+                    <dt>Token usage</dt>
+                    <dd>
+                      {activeRun?.usage
+                        ? (activeRun.usage.inputTokens ?? 0) + " in / " + (activeRun.usage.outputTokens ?? 0) + " out"
+                        : "Pending"}
+                    </dd>
+                  </div>
+                </dl>
+                <SafetyEvents events={safetyEvents} />
+                <RunControls
+                  active={activeRun !== null && ["queued", "running"].includes(activeRun.status)}
+                  disabled={busy}
+                  onStop={() => void stopRun()}
+                />
+              </aside>
+            </div>
           </>
         ) : (
           <div className="no-agent">

@@ -320,6 +320,14 @@ export class AgentService {
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
+        onSafetyEvent: (event) =>
+          this.recordSafetyEvent({
+            runId: run.id,
+            agentId: agentAtStart.id,
+            boundary: "RUNNER",
+            decision: event.decision,
+            reason: event.reason,
+          }),
       });
 
       const completedAt = now();
