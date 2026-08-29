@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import { RunControls } from "./components/RunControls";
+import { SafetyEvents } from "./components/SafetyEvents";
+import { SafetyStatus } from "./components/SafetyStatus";
+import type { Agent, AgentRun, Message, SafetyEvent, SystemInfo } from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -45,6 +48,7 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [safetyEvents, setSafetyEvents] = useState<SafetyEvent[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -77,6 +81,11 @@ export default function App() {
     }
   }, []);
 
+  const refreshSafetyEvents = useCallback(async (runId: string) => {
+    const result = await api.safetyEvents(runId);
+    setSafetyEvents(result.events);
+  }, []);
+
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
@@ -98,16 +107,18 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setSafetyEvents([]);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
       return;
     }
     void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
-      .then(([, result]) => {
+      .then(async ([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
+        if (latest) await refreshSafetyEvents(latest.id);
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
@@ -117,7 +128,7 @@ export default function App() {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
-  }, [refreshMessages, selectedId]);
+  }, [refreshMessages, refreshSafetyEvents, selectedId]);
 
   useEffect(() => {
     if (selected) {
@@ -208,8 +219,9 @@ export default function App() {
       while (mountedRef.current) {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
-        const result = await api.run(runId);
+        const [result, eventResult] = await Promise.all([api.run(runId), api.safetyEvents(runId)]);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
+        if (selectedIdRef.current === agentId) setSafetyEvents(eventResult.events);
         if (!["queued", "running"].includes(result.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
@@ -231,6 +243,7 @@ export default function App() {
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
+        setSafetyEvents([]);
       }
       setAgents((current) =>
         current.map((agent) =>
@@ -242,6 +255,20 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : String(reason));
       setActiveRun(null);
       await refreshAgents();
+    }
+  };
+
+  const stopRun = async () => {
+    if (!selected || !activeRun || !["queued", "running"].includes(activeRun.status)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.stopAgent(selected.id);
+      await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -399,6 +426,7 @@ export default function App() {
                 <div className="header-title-row">
                   <h1>{selected.name}</h1>
                   <StatusPill status={selected.status} />
+                  <SafetyStatus run={activeRun} events={safetyEvents} />
                 </div>
                 <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
               </div>
@@ -417,6 +445,11 @@ export default function App() {
                 >
                   {selected.status === "stopped" ? "Start" : "Stop"}
                 </button>
+                <RunControls
+                  active={activeRun !== null && ["queued", "running"].includes(activeRun.status)}
+                  disabled={busy}
+                  onStop={() => void stopRun()}
+                />
                 <button
                   className="button button-danger"
                   onClick={deleteAgent}
@@ -476,6 +509,8 @@ export default function App() {
                 </div>
               </form>
             )}
+
+            <SafetyEvents events={safetyEvents} />
 
             <section className="playground">
               <div className="playground-topbar">

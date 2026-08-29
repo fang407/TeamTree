@@ -189,7 +189,7 @@ describe("Agent lifecycle", () => {
     const agent = await service.createAgent({ name: "Redaction Test" });
 
     const secret = "sk-demo12345678";
-    aconst prompt = `Use API key ${secret} for this request.`;
+    const prompt = `Use API key ${secret} for this request.`;
     const { run } = await service.sendMessage(agent.id, prompt);
 
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");

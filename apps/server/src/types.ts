@@ -92,11 +92,17 @@ export interface RunnerResult {
   usage: RunUsage | null;
 }
 
+export interface RunnerSafetyEvent {
+  decision: Extract<SafetyDecision, "ALLOW" | "BLOCK" | "CANCELLED">;
+  reason: string;
+}
+
 export interface RunnerRequest {
   agentId: string;
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  onSafetyEvent?: (event: RunnerSafetyEvent) => Promise<void>;
 }
 
 export interface AgentRunner {
