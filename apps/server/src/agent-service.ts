@@ -9,9 +9,11 @@ import type {
   AgentRunner,
   CreateAgentInput,
   Message,
+  SafetyEvent,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { SafetyMiddleware } from "./safety-middleware.js";
 
 const now = () => new Date().toISOString();
 
@@ -24,6 +26,7 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
+    private readonly safetyMiddleware: SafetyMiddleware,
   ) {}
 
   async initialize(): Promise<void> {
@@ -150,6 +153,15 @@ export class AgentService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  getSafetyEvents(runId: string): SafetyEvent[] {
+    this.getRun(runId);
+
+    return this.store
+      .snapshot()
+      .safetyEvents.filter((event) => event.runId === runId)
+      .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
@@ -235,26 +247,87 @@ export class AgentService {
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
-      if (storedRun) {
-        storedRun.status = "running";
-        storedRun.startedAt = now();
-      }
-    });
+        if (storedRun) {
+          storedRun.status = "running";
+          storedRun.startedAt = now();
+        }
+      });
+
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+
+      const safetyResult = await this.safetyMiddleware.evaluate(run.prompt);
+
+      if (this.cancellationRequests.has(agentAtStart.id)) {
+        throw new RunCancelledError();
+      }
+
+      if (safetyResult.wasRedacted) {
+        await this.recordSafetyEvent({
+          runId: run.id,
+          agentId: agentAtStart.id,
+          boundary: "SERVICE",
+          decision: "REDACT",
+          reason: "Secret removed from trace",
+        });
+      }
+
+      if (safetyResult.decision === "BLOCK") {
+        const completedAt = now();
+
+        await this.store.mutate((database) => {
+          const storedRun = database.runs.find((item) => item.id === run.id);
+          const agent = database.agents.find(
+            (item) => item.id === agentAtStart.id,
+          );
+
+          if (storedRun) {
+            storedRun.status = "blocked";
+            storedRun.error = safetyResult.reason;
+            storedRun.completedAt = completedAt;
+          }
+
+          if (agent) {
+            agent.status = "ready";
+            agent.lastError = null;
+            agent.updatedAt = completedAt;
+          }
+        });
+
+        await this.recordSafetyEvent({
+          runId: run.id,
+          agentId: agentAtStart.id,
+          boundary: "SERVICE",
+          decision: "BLOCK",
+          reason: safetyResult.reason,
+        });
+
+        return;
+      }
+
+      await this.recordSafetyEvent({
+        runId: run.id,
+        agentId: agentAtStart.id,
+        boundary: "SERVICE",
+        decision: "ALLOW",
+        reason: safetyResult.reason,
+      });
+
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
       });
+
       const completedAt = now();
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
+
         storedRun.status = "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
@@ -322,5 +395,17 @@ export class AgentService {
     } finally {
       this.cancellationRequests.delete(agentId);
     }
+  }
+
+  private async recordSafetyEvent(
+    event: Omit<SafetyEvent, "id" | "timestamp">,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      database.safetyEvents.push({
+        ...event,
+        id: randomUUID(),
+        timestamp: now(),
+      });
+    });
   }
 }
