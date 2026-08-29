@@ -7,21 +7,33 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import { validateRequest } from "./validation.js";
 
-const agentIdParams = z.object({ id: z.string().uuid() });
-const runIdParams = z.object({ id: z.string().uuid() });
-const createAgentBody = z.object({
-  name: z.string().trim().min(1).max(80),
-  description: z.string().max(500).optional(),
-  instructions: z.string().max(10_000).optional(),
-});
-const updateAgentBody = createAgentBody.partial().refine(
-  (value) => Object.keys(value).length > 0,
-  "At least one field is required",
+const agentIdParams = z
+  .object({ id: z.string().uuid() })
+  .strict();
+const runIdParams = z
+  .object({ id: z.string().uuid() })
+  .strict();
+const createAgentBody = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    description: z.string().max(500).optional(),
+    instructions: z.string().max(10_000).optional(),
+  })
+  .strict();
+const updateAgentBody = createAgentBody
+  .partial()
+  .strict()
+  .refine(
+    (value) => Object.keys(value).length > 0,
+    "At least one field is required",
 );
-const messageBody = z.object({
-  content: z.string().trim().min(1).max(50_000),
-});
+const messageBody = z
+  .object({
+    content: z.string().trim().min(1).max(50_000),
+  })
+  .strict();
 
 export async function createApp(
   config: AppConfig,
@@ -74,59 +86,109 @@ export async function createApp(
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
-  app.post("/api/agents", async (request, reply) => {
-    const body = createAgentBody.parse(request.body);
-    const agent = await service.createAgent(body);
-    return reply.code(201).send({ agent });
-  });
+  app.post(
+    "/api/agents",
+    { preValidation: validateRequest({ body: createAgentBody }) },
+    async (request, reply) => {
+      const body = createAgentBody.parse(request.body);
+      const agent = await service.createAgent(body);
+      return reply.code(201).send({ agent });
+    }
+  );
 
-  app.get("/api/agents/:id", async (request) => {
-    const { id } = agentIdParams.parse(request.params);
-    return { agent: service.getAgent(id) };
-  });
+  app.get(
+    "/api/agents/:id",
+    { preValidation: validateRequest({ params: agentIdParams }) },
+    async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      return { agent: service.getAgent(id) };
+    },
+  );
 
-  app.patch("/api/agents/:id", async (request) => {
-    const { id } = agentIdParams.parse(request.params);
-    const body = updateAgentBody.parse(request.body);
-    return { agent: await service.updateAgent(id, body) };
-  });
+  app.patch(
+    "/api/agents/:id", 
+    {
+      preValidation: validateRequest({
+        params: agentIdParams,
+        body: updateAgentBody
+      }),
+    },
+    async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      const body = updateAgentBody.parse(request.body);
+      return { agent: await service.updateAgent(id, body) };
+    }
+  );
 
-  app.delete("/api/agents/:id", async (request) => {
-    const { id } = agentIdParams.parse(request.params);
-    return service.deleteAgent(id);
-  });
+  app.delete(
+    "/api/agents/:id",
+    { preValidation: validateRequest({ params: agentIdParams }) },
+    async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      return service.deleteAgent(id);
+    }
+  );
 
-  app.post("/api/agents/:id/start", async (request) => {
-    const { id } = agentIdParams.parse(request.params);
-    return { agent: await service.startAgent(id) };
-  });
+  app.post(
+    "/api/agents/:id/start", 
+    { preValidation: validateRequest({ params: agentIdParams }) },
+    async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      return { agent: await service.startAgent(id) };
+    }
+  );
 
-  app.post("/api/agents/:id/stop", async (request) => {
-    const { id } = agentIdParams.parse(request.params);
-    return { agent: await service.stopAgent(id) };
-  });
+  app.post(
+    "/api/agents/:id/stop", 
+    { preValidation: validateRequest({ params: agentIdParams }) },
+    async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      return { agent: await service.stopAgent(id) };
+    }
+  );
 
-  app.get("/api/agents/:id/messages", async (request) => {
-    const { id } = agentIdParams.parse(request.params);
-    return { messages: service.getMessages(id) };
-  });
+  app.get(
+    "/api/agents/:id/messages", 
+    { preValidation: validateRequest({ params: agentIdParams }) },
+    async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      return { messages: service.getMessages(id) };
+    }
+  );
 
-  app.get("/api/agents/:id/runs", async (request) => {
-    const { id } = agentIdParams.parse(request.params);
-    return { runs: service.getRuns(id) };
-  });
+  app.get(
+    "/api/agents/:id/runs",
+    { preValidation: validateRequest({ params: agentIdParams }) },
+    async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      return { runs: service.getRuns(id) };
+    }
+  );
 
-  app.post("/api/agents/:id/messages", async (request, reply) => {
-    const { id } = agentIdParams.parse(request.params);
-    const body = messageBody.parse(request.body);
-    const result = await service.sendMessage(id, body.content);
-    return reply.code(202).send(result);
-  });
+  app.post(
+    "/api/agents/:id/messages",
+    {
+      preValidation: validateRequest({
+        params: agentIdParams,
+        body: messageBody,
+      }),
+    },
+    async (request, reply) => {
+      const { id } = agentIdParams.parse(request.params);
+      const body = messageBody.parse(request.body);
+      const result = await service.sendMessage(id, body.content);
+      return reply.code(202).send(result);
+    }
+  );
 
-  app.get("/api/runs/:id", async (request) => {
-    const { id } = runIdParams.parse(request.params);
-    return { run: service.getRun(id) };
-  });
+  app.get(
+    "/api/runs/:id",
+    { preValidation: validateRequest({ params: runIdParams }) },
+    async (request) => {
+      const { id } = runIdParams.parse(request.params);
+      return { run: service.getRun(id) };
+    }
+  );
 
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
