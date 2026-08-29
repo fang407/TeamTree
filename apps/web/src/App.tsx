@@ -25,6 +25,18 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
+function formatDuration(
+  startedAt: string | null,
+  completedAt: string | null,
+  currentTime: number,
+): string {
+  if (!startedAt) return "Not started";
+  const endTime = completedAt ? new Date(completedAt).getTime() : currentTime;
+  const seconds = Math.max(0, Math.floor((endTime - new Date(startedAt).getTime()) / 1000));
+  if (seconds < 60) return seconds + "s";
+  return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
+}
+
 function StatusPill({ status }: { status: Agent["status"] }) {
   return (
     <span className={"status status-" + status}>
@@ -49,6 +61,7 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [safetyEvents, setSafetyEvents] = useState<SafetyEvent[]>([]);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -143,6 +156,13 @@ export default function App() {
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
+
+  useEffect(() => {
+    if (!activeRun || !["queued", "running"].includes(activeRun.status)) return;
+    setCurrentTime(Date.now());
+    const interval = window.setInterval(() => setCurrentTime(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [activeRun?.id, activeRun?.status]);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -445,11 +465,6 @@ export default function App() {
                 >
                   {selected.status === "stopped" ? "Start" : "Stop"}
                 </button>
-                <RunControls
-                  active={activeRun !== null && ["queued", "running"].includes(activeRun.status)}
-                  disabled={busy}
-                  onStop={() => void stopRun()}
-                />
                 <button
                   className="button button-danger"
                   onClick={deleteAgent}
@@ -510,9 +525,8 @@ export default function App() {
               </form>
             )}
 
-            <SafetyEvents events={safetyEvents} />
-
-            <section className="playground">
+            <div className="agent-workspace">
+              <section className="playground">
               <div className="playground-topbar">
                 <div>
                   <span className="eyebrow">Playground</span>
@@ -616,7 +630,59 @@ export default function App() {
                   </button>
                 </div>
               </form>
-            </section>
+              </section>
+
+              <aside className="safety-panel">
+                <div className="safety-panel-heading">
+                  <span className="eyebrow">Current run</span>
+                  <SafetyStatus run={activeRun} events={safetyEvents} />
+                </div>
+                <dl className="run-details">
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{activeRun?.status ?? "Idle"}</dd>
+                  </div>
+                  <div>
+                    <dt>Run ID</dt>
+                    <dd className="run-id">{activeRun?.id ?? "No active run"}</dd>
+                  </div>
+                  <div>
+                    <dt>Agent</dt>
+                    <dd>{selected.name}</dd>
+                  </div>
+                  <div>
+                    <dt>Started</dt>
+                    <dd>{activeRun?.startedAt ? formatTime(activeRun.startedAt) : "Not started"}</dd>
+                  </div>
+                  <div>
+                    <dt>Duration</dt>
+                    <dd>{formatDuration(activeRun?.startedAt ?? null, activeRun?.completedAt ?? null, currentTime)}</dd>
+                  </div>
+                  <div>
+                    <dt>Steps</dt>
+                    <dd className="run-detail-unavailable">Not reported</dd>
+                  </div>
+                  <div>
+                    <dt>Tool calls</dt>
+                    <dd className="run-detail-unavailable">Not reported</dd>
+                  </div>
+                  <div>
+                    <dt>Token usage</dt>
+                    <dd>
+                      {activeRun?.usage
+                        ? (activeRun.usage.inputTokens ?? 0) + " in / " + (activeRun.usage.outputTokens ?? 0) + " out"
+                        : "Pending"}
+                    </dd>
+                  </div>
+                </dl>
+                <SafetyEvents events={safetyEvents} />
+                <RunControls
+                  active={activeRun !== null && ["queued", "running"].includes(activeRun.status)}
+                  disabled={busy}
+                  onStop={() => void stopRun()}
+                />
+              </aside>
+            </div>
           </>
         ) : (
           <div className="no-agent">

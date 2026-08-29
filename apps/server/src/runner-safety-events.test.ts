@@ -39,7 +39,7 @@ function localConfig(codexBin: string, overrides: Record<string, string> = {}) {
     NODE_ENV: "test",
     CODEX_BIN: codexBin,
     CODEX_HOME: os.tmpdir(),
-    CODEX_TIMEOUT_MS: "1000",
+    CODEX_TIMEOUT_MS: "3000",
     CODEX_MAX_OUTPUT_BYTES: "65536",
     ...overrides,
   });
@@ -61,7 +61,7 @@ describe("Runner safety events", () => {
   it("records timeout cancellation", async () => {
     const executable = await fakeExecutable("setTimeout(() => {}, 5000);");
     const events: RunnerSafetyEvent[] = [];
-    const runner = new CodexRunner(localConfig(executable));
+    const runner = new CodexRunner(localConfig(executable, { CODEX_TIMEOUT_MS: "1000" }));
 
     await expect(runner.run(request(events))).rejects.toThrow("timed out");
     expect(events).toContainEqual({ decision: "CANCELLED", reason: "Timeout exceeded" });

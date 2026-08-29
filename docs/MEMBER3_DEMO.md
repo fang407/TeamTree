@@ -1,5 +1,22 @@
 # Member 3: Runner Boundary and Safety Dashboard
 
+## Start the demo locally
+
+Use the project POC command for the end-to-end demo. It starts the configured
+runtime and serves the built dashboard from one address:
+
+```bash
+cd /Users/chenxiaohe/TeamTree
+ARK_API_KEY=your-ark-api-key ARK_MODEL=ep-your-endpoint-id npm run poc
+```
+
+Open <http://localhost:3000>. Keep the terminal running while testing. Press
+`Ctrl+C` when finished; Agent data remains available for the next run.
+
+For frontend-only development, `npm run dev` starts the Vite UI at
+<http://localhost:5173> and the API at <http://localhost:3000>. Use `npm run
+poc` for the presentation because it exercises the actual Runner path.
+
 ## Architecture
 
 ```mermaid

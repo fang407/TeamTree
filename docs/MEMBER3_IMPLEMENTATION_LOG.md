@@ -114,3 +114,60 @@ their execution model.
 
 - Documented the Runner event flow, existing container protections, dashboard
   API, and a three-case normal / stopped / output-limit demo script.
+
+## 2026-08-29 - Demo startup instructions
+
+### Edited
+
+- `docs/MEMBER3_DEMO.md`
+
+### Change
+
+- Added the actual end-to-end `npm run poc` command, required Ark environment
+  variables, presentation URL, and the distinction between POC and frontend
+  development startup modes.
+
+## 2026-08-29 - Split safety workspace layout
+
+### Edited
+
+- `apps/web/src/App.tsx`
+- `apps/web/src/styles.css`
+
+### Change
+
+- Reworked the selected Agent view into a chat column and a right-side safety
+  column, following the supplied dashboard layout reference.
+- The safety column shows only available live data: run status, Agent, start
+  time, token usage, real event timeline, and Stop Run. It intentionally does
+  not fabricate user identity or step-count fields that the backend does not
+  provide.
+
+## 2026-08-29 - Current Run details
+
+### Edited
+
+- `apps/web/src/App.tsx`
+- `apps/web/src/styles.css`
+
+### Change
+
+- Added the current run identifier and a duration derived from the run's real
+  start/completion timestamps; the duration refreshes once per second while a
+  run is active.
+- Added explicit `Not reported` fields for Steps and Tool calls because the
+  current Runner contract does not publish those metrics. This avoids showing
+  invented values in the safety dashboard.
+
+## 2026-08-29 - Runner test stability
+
+### Edited
+
+- `apps/server/src/runner-safety-events.test.ts`
+
+### Change
+
+- Increased the default test fixture timeout to allow a Node process to start
+  reliably in slower local environments.
+- Kept the explicit timeout scenario fast with its own short timeout, so the
+  test continues to verify cancellation without introducing slow test runs.
