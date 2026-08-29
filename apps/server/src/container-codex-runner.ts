@@ -5,6 +5,7 @@ import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
+  RunnerSafetyEvent,
   RunUsage,
   RunnerRequest,
   RunnerResult,
@@ -20,6 +21,7 @@ interface ActiveContainer {
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
+  emitSafetyEvent: (event: RunnerSafetyEvent) => Promise<void>;
 }
 
 interface ParsedEvents {
@@ -115,6 +117,10 @@ export class ContainerCodexRunner implements AgentRunner {
     if (!active) return false;
 
     active.cancelled = true;
+    await active.emitSafetyEvent({
+      decision: "CANCELLED",
+      reason: "User stopped execution",
+    });
     await this.removeContainer(active);
     await active.settled;
     return true;
@@ -163,8 +169,10 @@ export class ContainerCodexRunner implements AgentRunner {
       outputExceeded: false,
       settled,
       termination: null,
+      emitSafetyEvent: (event: RunnerSafetyEvent) => this.emitSafetyEvent(request, event),
     };
     this.active.set(request.agentId, active);
+    await active.emitSafetyEvent({ decision: "ALLOW", reason: "Execution started" });
 
     const parsed: ParsedEvents = {
       messages: [],
@@ -179,7 +187,13 @@ export class ContainerCodexRunner implements AgentRunner {
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
       if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
+        if (!active.outputExceeded) {
+          active.outputExceeded = true;
+          void active.emitSafetyEvent({
+            decision: "BLOCK",
+            reason: "Output limit exceeded",
+          });
+        }
         void this.removeContainer(active);
         return;
       }
@@ -198,7 +212,12 @@ export class ContainerCodexRunner implements AgentRunner {
     child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
 
     const timeout = setTimeout(() => {
+      if (active.timedOut) return;
       active.timedOut = true;
+      void active.emitSafetyEvent({
+        decision: "CANCELLED",
+        reason: "Timeout exceeded",
+      });
       void this.removeContainer(active);
     }, this.config.codexTimeoutMs);
     timeout.unref();
@@ -251,5 +270,16 @@ export class ContainerCodexRunner implements AgentRunner {
       if (process.env[name] !== undefined) environment[name] = process.env[name];
     }
     return environment;
+  }
+
+  private async emitSafetyEvent(
+    request: RunnerRequest,
+    event: RunnerSafetyEvent,
+  ): Promise<void> {
+    try {
+      await request.onSafetyEvent?.(event);
+    } catch {
+      // Execution safety must not depend on audit-store availability.
+    }
   }
 }
