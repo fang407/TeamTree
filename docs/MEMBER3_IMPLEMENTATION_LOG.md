@@ -171,3 +171,5 @@ their execution model.
   reliably in slower local environments.
 - Kept the explicit timeout scenario fast with its own short timeout, so the
   test continues to verify cancellation without introducing slow test runs.
+- Gave the output-limit fixture additional time to drain its intentionally
+  large stream before evaluating the output-limit assertion.
