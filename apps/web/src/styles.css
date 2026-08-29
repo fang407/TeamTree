@@ -1034,6 +1034,10 @@ textarea:focus {
   margin-top: 13px;
 }
 
+.modal > .error-banner {
+  margin: 4px 0 0;
+}
+
 .modal-footer {
   display: flex;
   justify-content: flex-end;
