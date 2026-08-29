@@ -63,6 +63,8 @@ export default function App() {
   const [safetyEvents, setSafetyEvents] = useState<SafetyEvent[]>([]);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
+  const [loadingRun, setLoadingRun] = useState(false);
+  const [loadingSafetyEvents, setLoadingSafetyEvents] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -96,8 +98,16 @@ export default function App() {
   }, []);
 
   const refreshSafetyEvents = useCallback(async (runId: string) => {
-    const result = await api.safetyEvents(runId);
-    setSafetyEvents(result.events);
+    setLoadingSafetyEvents(true);
+
+    try {
+      const result = await api.safetyEvents(runId);
+      setSafetyEvents(result.events);
+    } catch {
+      setError("Unable to load safety events");
+    } finally {
+      setLoadingSafetyEvents(false);
+    }
   }, []);
 
   const bootstrap = useCallback(async () => {
@@ -123,25 +133,32 @@ export default function App() {
     setActiveRun(null);
     setSafetyEvents([]);
     setShowSettings(false);
+
     if (!selectedId) {
       setMessages([]);
+      setLoadingRun(false);
       return;
     }
+
+    setLoadingRun(true);
+
     void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
       .then(async ([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
+
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
-        if (latest) await refreshSafetyEvents(latest.id);
-        if (latest && ["queued", "running"].includes(latest.status)) {
-          void pollRun(latest.id, selectedId).catch((reason) =>
-            setError(getUserFacingError(reason)),
-          );
+
+        if (latest) {
+          await refreshSafetyEvents(latest.id);
         }
       })
-      .catch((reason) =>
-        setError(getUserFacingError(reason)),
-      );
+      .catch((reason) => {
+        setError(getUserFacingError(reason));
+      })
+      .finally(() => {
+        setLoadingRun(false);
+      });
   }, [refreshMessages, refreshSafetyEvents, selectedId]);
 
   useEffect(() => {
@@ -643,7 +660,7 @@ export default function App() {
                 <dl className="run-details">
                   <div>
                     <dt>Status</dt>
-                    <dd>{activeRun?.status ?? "Idle"}</dd>
+                    <dd>{loadingRun ? <Spinner /> : activeRun?.status ?? "Idle"}</dd>
                   </div>
                   <div>
                     <dt>Run ID</dt>
@@ -678,7 +695,10 @@ export default function App() {
                     </dd>
                   </div>
                 </dl>
-                <SafetyEvents events={safetyEvents} />
+                <SafetyEvents 
+                  events={safetyEvents} 
+                  loading={loadingSafetyEvents}
+                />
                 <RunControls
                   active={activeRun !== null && ["queued", "running"].includes(activeRun.status)}
                   disabled={busy}
