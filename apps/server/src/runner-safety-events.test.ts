@@ -82,7 +82,11 @@ describe("Runner safety events", () => {
   it("records output-limit blocks and surfaces failed processes", async () => {
     const outputExecutable = await fakeExecutable("process.stdout.write('x'.repeat(70000));");
     const outputEvents: RunnerSafetyEvent[] = [];
-    await expect(new CodexRunner(localConfig(outputExecutable)).run(request(outputEvents))).rejects.toThrow(
+    await expect(
+      new CodexRunner(localConfig(outputExecutable, { CODEX_TIMEOUT_MS: "10000" })).run(
+        request(outputEvents),
+      ),
+    ).rejects.toThrow(
       "output exceeded",
     );
     expect(outputEvents).toContainEqual({ decision: "BLOCK", reason: "Output limit exceeded" });
