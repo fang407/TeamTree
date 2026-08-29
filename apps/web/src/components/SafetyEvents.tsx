@@ -8,7 +8,13 @@ function formatEventTime(value: string): string {
   }).format(new Date(value));
 }
 
-export function SafetyEvents({ events }: { events: SafetyEvent[] }) {
+export function SafetyEvents({
+  events,
+  loading = false,
+}: {
+  events: SafetyEvent[];
+  loading?: boolean;
+}) {
   return (
     <section className="safety-events" aria-label="Safety event timeline">
       <div className="safety-events-heading">
@@ -16,15 +22,33 @@ export function SafetyEvents({ events }: { events: SafetyEvent[] }) {
           <span className="eyebrow">Safety events</span>
           <h3>Runtime decision timeline</h3>
         </div>
-        <span>{events.length}</span>
+        <span>{loading ? "…" : events.length}</span>
       </div>
-      {events.length === 0 ? (
-        <p className="safety-events-empty">No safety events recorded for this run yet.</p>
+
+      {loading ? (
+        <p className="safety-events-empty" aria-live="polite">
+          Loading safety events…
+        </p>
+      ) : events.length === 0 ? (
+        <p className="safety-events-empty">
+          No safety events recorded for this run yet.
+        </p>
       ) : (
         <ol className="safety-events-list">
           {events.map((event) => (
-            <li key={event.id} className={"safety-event safety-event-" + event.decision.toLowerCase()}>
-              <strong>{event.decision === "ALLOW" ? "✓" : event.decision === "BLOCK" ? "⛔" : "■"}</strong>
+            <li
+              key={event.id}
+              className={
+                "safety-event safety-event-" + event.decision.toLowerCase()
+              }
+            >
+              <strong>
+                {event.decision === "ALLOW"
+                  ? "✓"
+                  : event.decision === "BLOCK"
+                    ? "⛔"
+                    : "■"}
+              </strong>
               <div>
                 <span>{event.decision} · {event.boundary}</span>
                 <p>{event.reason}</p>

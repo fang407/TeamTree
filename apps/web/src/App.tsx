@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, setAuthToken } from "./api";
+import { api, ApiError, getUserFacingError, setAuthToken } from "./api";
 import { RunControls } from "./components/RunControls";
 import { SafetyEvents } from "./components/SafetyEvents";
 import { SafetyStatus } from "./components/SafetyStatus";
@@ -63,7 +63,10 @@ export default function App() {
   const [safetyEvents, setSafetyEvents] = useState<SafetyEvent[]>([]);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
+  const [loadingRun, setLoadingRun] = useState(false);
+  const [loadingSafetyEvents, setLoadingSafetyEvents] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
@@ -95,8 +98,16 @@ export default function App() {
   }, []);
 
   const refreshSafetyEvents = useCallback(async (runId: string) => {
-    const result = await api.safetyEvents(runId);
-    setSafetyEvents(result.events);
+    setLoadingSafetyEvents(true);
+
+    try {
+      const result = await api.safetyEvents(runId);
+      setSafetyEvents(result.events);
+    } catch {
+      setError("Unable to load safety events");
+    } finally {
+      setLoadingSafetyEvents(false);
+    }
   }, []);
 
   const bootstrap = useCallback(async () => {
@@ -112,7 +123,7 @@ export default function App() {
         setAuthRequired(required);
         if (!required) await bootstrap();
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      .catch((reason) => setError(getUserFacingError(reason)));
     return () => {
       mountedRef.current = false;
     };
@@ -122,25 +133,32 @@ export default function App() {
     setActiveRun(null);
     setSafetyEvents([]);
     setShowSettings(false);
+
     if (!selectedId) {
       setMessages([]);
+      setLoadingRun(false);
       return;
     }
+
+    setLoadingRun(true);
+
     void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
       .then(async ([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
+
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
-        if (latest) await refreshSafetyEvents(latest.id);
-        if (latest && ["queued", "running"].includes(latest.status)) {
-          void pollRun(latest.id, selectedId).catch((reason) =>
-            setError(reason instanceof Error ? reason.message : String(reason)),
-          );
+
+        if (latest) {
+          await refreshSafetyEvents(latest.id);
         }
       })
-      .catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
-      );
+      .catch((reason) => {
+        setError(getUserFacingError(reason));
+      })
+      .finally(() => {
+        setLoadingRun(false);
+      });
   }, [refreshMessages, refreshSafetyEvents, selectedId]);
 
   useEffect(() => {
@@ -168,6 +186,7 @@ export default function App() {
     event.preventDefault();
     setBusy(true);
     setError(null);
+    setCreateError(null);
     try {
       const { agent } = await api.createAgent(form);
       await refreshAgents();
@@ -175,7 +194,7 @@ export default function App() {
       setShowCreate(false);
       setForm(emptyForm);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setCreateError(getUserFacingError(reason));
     } finally {
       setBusy(false);
     }
@@ -191,7 +210,7 @@ export default function App() {
       await refreshAgents();
       setShowSettings(false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(getUserFacingError(reason));
     } finally {
       setBusy(false);
     }
@@ -209,7 +228,7 @@ export default function App() {
       }
       await refreshAgents();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(getUserFacingError(reason));
     } finally {
       setBusy(false);
     }
@@ -226,7 +245,7 @@ export default function App() {
       await api.deleteAgent(selected.id);
       await refreshAgents();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(getUserFacingError(reason));
     } finally {
       setBusy(false);
     }
@@ -272,7 +291,7 @@ export default function App() {
       );
       await pollRun(result.run.id, selected.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(getUserFacingError(reason));
       setActiveRun(null);
       await refreshAgents();
     }
@@ -286,7 +305,7 @@ export default function App() {
       await api.stopAgent(selected.id);
       await refreshAgents();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(getUserFacingError(reason));
     } finally {
       setBusy(false);
     }
@@ -305,7 +324,7 @@ export default function App() {
       if (reason instanceof ApiError && reason.status === 401) {
         setError("The access token is not valid.");
       } else {
-        setError(reason instanceof Error ? reason.message : String(reason));
+        setError(getUserFacingError(reason));
       }
     } finally {
       setBusy(false);
@@ -372,6 +391,7 @@ export default function App() {
           className="button button-primary create-button"
           onClick={() => {
             setForm(emptyForm);
+            setCreateError(null);
             setShowCreate(true);
           }}
         >
@@ -640,7 +660,7 @@ export default function App() {
                 <dl className="run-details">
                   <div>
                     <dt>Status</dt>
-                    <dd>{activeRun?.status ?? "Idle"}</dd>
+                    <dd>{loadingRun ? <Spinner /> : activeRun?.status ?? "Idle"}</dd>
                   </div>
                   <div>
                     <dt>Run ID</dt>
@@ -675,7 +695,10 @@ export default function App() {
                     </dd>
                   </div>
                 </dl>
-                <SafetyEvents events={safetyEvents} />
+                <SafetyEvents 
+                  events={safetyEvents} 
+                  loading={loadingSafetyEvents}
+                />
                 <RunControls
                   active={activeRun !== null && ["queued", "running"].includes(activeRun.status)}
                   disabled={busy}
@@ -694,6 +717,7 @@ export default function App() {
               className="button button-primary"
               onClick={() => {
                 setForm(emptyForm);
+                setCreateError(null);
                 setShowCreate(true);
               }}
             >
@@ -742,7 +766,7 @@ export default function App() {
             </label>
             <label>
               Instructions
-              <textarea
+            <textarea
                 value={form.instructions}
                 onChange={(event) =>
                   setForm({ ...form, instructions: event.target.value })
@@ -751,6 +775,11 @@ export default function App() {
                 maxLength={10_000}
               />
             </label>
+            {createError && (
+              <div className="error-banner" role="alert">
+                {createError}
+              </div>
+            )}
             <div className="modal-footer">
               <button
                 type="button"
