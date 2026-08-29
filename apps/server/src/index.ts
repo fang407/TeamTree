@@ -5,6 +5,7 @@ import { loadConfig, writeCodexConfig } from "./config.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
+import { SafetyMiddleware } from "./safety-middleware.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
@@ -12,7 +13,8 @@ await writeCodexConfig(config);
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 const runner = createRunner(config);
-const service = new AgentService(config, store, workspaces, runner);
+const safetyMiddleware = new SafetyMiddleware();
+const service = new AgentService(config, store, workspaces, runner, safetyMiddleware);
 await service.initialize();
 
 const app = await createApp(config, service);
