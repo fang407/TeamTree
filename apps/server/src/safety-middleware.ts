@@ -9,9 +9,15 @@ import {
 } from "./patterns/promptInjectionPatterns.js";
 
 import {
+  BASELINE_PII_PATTERNS,
+  FRAMEWORK_PII_PATTERNS,
+  type ComplianceFramework,
+  type PiiPattern,
+} from "./patterns/compliancePatterns.js";
+
+import {
   normalizeForInjectionScan,
   shannonEntropy,
-  passesLuhnCheck,
 } from "./utils/textUtils.js";
 
 const REDACTED_SECRET = "[REDACTED_SECRET]";
@@ -37,45 +43,19 @@ interface Finding {
   replacement: string;
 }
 
-interface PiiPattern {
-  id: string;
-  regex: RegExp;
-  severity: Severity;
-  validate?: (matchedText: string) => boolean;
-}
-
-const EMAIL_PATTERN: PiiPattern = {
-  id: "email-address",
-  regex:
-    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
-  severity: "low",
-};
-
-const STRICT_PII_PATTERNS: PiiPattern[] = [
-  {
-    id: "phone-number",
-    regex: /\b\+?\d[\d\s()-]{7,}\d\b/g,
-    severity: "low",
-  },
-  {
-    id: "us-ssn",
-    regex: /\b\d{3}-\d{2}-\d{4}\b/g,
-    severity: "high",
-  },
-  {
-    id: "credit-card-number",
-    regex: /\b(?:\d[ -]?){13,19}\b/g,
-    severity: "high",
-    validate: passesLuhnCheck,
-  },
-];
-
 export interface SafetyPolicyConfig {
   redactionEnabled: boolean;
   promptSafetyEnabled: boolean;
 
   compliance: {
-    strictPii: boolean;
+    /**
+     * Which compliance frameworks' PII identifier sets are active. Empty
+     * array = baseline only (email). Multiple frameworks can be enabled at
+     * once — realistic for a deployment spanning jurisdictions or product
+     * lines. See patterns/compliancePatterns.ts for what each framework
+     * actually gates, and its stated limitations.
+     */
+    frameworks: ComplianceFramework[];
   };
 
   injection: {
@@ -83,12 +63,21 @@ export interface SafetyPolicyConfig {
   };
 }
 
-const DEFAULT_POLICY_CONFIG: SafetyPolicyConfig = {
+export const DEFAULT_POLICY_CONFIG: SafetyPolicyConfig = {
   redactionEnabled: true,
   promptSafetyEnabled: true,
 
   compliance: {
-    strictPii: false,
+    // GDPR + CCPA cover the two jurisdictions any consumer product with
+    // EU or US(-CA) users almost certainly needs by default. HIPAA and
+    // PCI_DSS stay opt-in — they only apply if the deployment actually
+    // handles health or payment-card data, which this middleware can't
+    // know on its own. Note: because CCPA's "personal information"
+    // definition is broad, this default activates most patterns except
+    // the two that are HIPAA-exclusive (medical-record-number,
+    // medicare-beneficiary-id) — see patterns/compliancePatterns.ts for
+    // the full per-pattern framework tagging.
+    frameworks: ["GDPR", "CCPA"],
   },
 
   injection: {
@@ -273,15 +262,20 @@ export class SafetyMiddleware {
   ): Finding[] {
     const findings: Finding[] = [];
 
-    const activePatterns: PiiPattern[] = [
-      // Email is sufficiently structured and low-cost
-      // to redact whenever redaction is enabled.
-      EMAIL_PATTERN,
+    const activeFrameworks = this.config.compliance.frameworks;
 
-      // Strict compliance adds more aggressive PII rules.
-      ...(this.config.compliance.strictPii
-        ? STRICT_PII_PATTERNS
-        : []),
+    const activePatterns: PiiPattern[] = [
+      // Baseline patterns (currently just email) are always active,
+      // independent of framework selection.
+      ...BASELINE_PII_PATTERNS,
+
+      // Framework-gated patterns only run if at least one of the
+      // pattern's tagged frameworks is enabled in config.
+      ...FRAMEWORK_PII_PATTERNS.filter((pattern) =>
+        pattern.frameworks.some((framework) =>
+          activeFrameworks.includes(framework),
+        ),
+      ),
     ];
 
     for (const pattern of activePatterns) {
@@ -381,28 +375,42 @@ export class SafetyMiddleware {
   ): string {
     let result = prompt;
 
-    // Work backwards so replacing one span does not shift
-    // the offsets of spans that occur earlier in the text.
-    const ordered = [...findings].sort(
-      (left, right) =>
-        right.start - left.start,
+    // Selecting which findings to keep must happen left-to-right and must
+    // prefer the longer match when spans start at the same point or one
+    // contains another — otherwise a small pattern nested inside a larger
+    // one (e.g. a "phone number"-shaped digit run inside a Slack token,
+    // which is a real overlap once PII detection runs alongside secret
+    // detection) can silently steal the redaction and leave the outer,
+    // more-specific match un-redacted. Sorting by (start ascending, length
+    // descending) and greedily keeping only non-overlapping spans is the
+    // standard fix for this class of bug.
+    const bySelectionOrder = [...findings].sort((left, right) => {
+      if (left.start !== right.start) return left.start - right.start;
+      return (right.end - right.start) - (left.end - left.start);
+    });
+
+    const kept: Finding[] = [];
+    let cursor = 0;
+    for (const finding of bySelectionOrder) {
+      if (finding.start < cursor) {
+        continue; // overlaps a span already claimed by an earlier, longer/earlier-starting match
+      }
+      kept.push(finding);
+      cursor = finding.end;
+    }
+
+    // Now apply the kept, non-overlapping findings. Splicing must happen
+    // right-to-left so replacing one span doesn't shift the offsets of
+    // spans that occur earlier in the text.
+    const byApplicationOrder = [...kept].sort(
+      (left, right) => right.start - left.start,
     );
 
-    let previousStart = prompt.length;
-
-    for (const finding of ordered) {
-      // Skip overlapping findings already covered by a
-      // later/larger replacement.
-      if (finding.end > previousStart) {
-        continue;
-      }
-
+    for (const finding of byApplicationOrder) {
       result =
         result.slice(0, finding.start) +
         finding.replacement +
         result.slice(finding.end);
-
-      previousStart = finding.start;
     }
 
     return result;

@@ -9,6 +9,7 @@ import type {
   RunUsage,
   RunnerRequest,
   RunnerResult,
+  ToolCallBreakdown,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -28,7 +29,23 @@ export interface ParsedEvents {
   threadId: string | null;
   usage: RunUsage | null;
   errors: string[];
+  /** Optional so existing call sites that build a plain object literal
+   * (e.g. tests) keep type-checking without needing these fields. */
+  stepCount?: number;
+  toolCalls?: ToolCallBreakdown;
 }
+
+/** Maps `codex exec --json` item.type values that represent a real action
+ * taken against the world to the breakdown bucket they belong in.
+ * "reasoning" and "agent_message" are deliberately excluded — they aren't
+ * actions, so counting them wouldn't tell you anything useful. */
+const TOOL_CALL_BUCKETS: Record<string, keyof ToolCallBreakdown> = {
+  command_execution: "commands",
+  file_change: "fileEdits",
+  mcp_tool_call: "other",
+  web_search: "other",
+  function_call: "other",
+};
 
 export function buildCodexArgs(
   request: RunnerRequest,
@@ -66,6 +83,18 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
 
   if (event.type === "item.completed" && event.item && typeof event.item === "object") {
     const item = event.item as Record<string, unknown>;
+
+    // Every completed work item counts as one "step" — reasoning, commands,
+    // file edits, tool calls, the final message, all of it.
+    parsed.stepCount = (parsed.stepCount ?? 0) + 1;
+
+    const bucket = typeof item.type === "string" ? TOOL_CALL_BUCKETS[item.type] : undefined;
+    if (bucket) {
+      const toolCalls = parsed.toolCalls ?? { commands: 0, fileEdits: 0, other: 0 };
+      toolCalls[bucket] += 1;
+      parsed.toolCalls = toolCalls;
+    }
+
     if (item.type === "agent_message" && typeof item.text === "string") {
       parsed.messages.push(item.text);
     }
@@ -167,6 +196,8 @@ export class CodexRunner implements AgentRunner {
       threadId: request.threadId,
       usage: null,
       errors: [],
+      stepCount: 0,
+      toolCalls: { commands: 0, fileEdits: 0, other: 0 },
     };
     let stdout = "";
     let stderr = "";
@@ -243,6 +274,8 @@ export class CodexRunner implements AgentRunner {
         output,
         threadId: parsed.threadId,
         usage: parsed.usage,
+        stepCount: parsed.stepCount ?? 0,
+        toolCalls: parsed.toolCalls ?? { commands: 0, fileEdits: 0, other: 0 },
       };
     } finally {
       clearTimeout(timeout);

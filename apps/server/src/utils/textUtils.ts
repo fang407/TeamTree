@@ -71,3 +71,22 @@ export function passesLuhnCheck(candidate: string): boolean {
 
   return sum % 10 === 0;
 }
+
+/**
+ * ABA bank routing number checksum: a bare 9-digit number is far too broad
+ * to redact on its own (order numbers, zip+4, phone fragments all match),
+ * so this cuts false positives the same way passesLuhnCheck does for card
+ * numbers. Verified during development against a real routing number
+ * (Chase: 021000021 passes; arbitrary/sequential 9-digit strings don't).
+ */
+export function passesAbaRoutingChecksum(candidate: string): boolean {
+  const digits = candidate.replace(/\D/g, "");
+  if (digits.length !== 9) return false;
+
+  const weights = [3, 7, 1, 3, 7, 1, 3, 7, 1];
+  let sum = 0;
+  for (let i = 0; i < 9; i += 1) {
+    sum += Number(digits.charAt(i)) * (weights[i] ?? 0);
+  }
+  return sum % 10 === 0;
+}
