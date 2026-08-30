@@ -70,4 +70,36 @@ describe("Codex runner protocol", () => {
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
   });
+
+  it("counts total steps and buckets tool calls by type", () => {
+    const parsed: {
+      messages: string[];
+      threadId: string | null;
+      usage: null;
+      errors: string[];
+      stepCount?: number;
+      toolCalls?: { commands: number; fileEdits: number; other: number };
+    } = {
+      messages: [],
+      threadId: null,
+      usage: null,
+      errors: [],
+    };
+
+    const completed = (item: Record<string, unknown>) =>
+      parseCodexEventLine(JSON.stringify({ type: "item.completed", item }), parsed);
+
+    completed({ type: "reasoning", text: "Thinking about it" });
+    completed({ type: "command_execution", command: "ls" });
+    completed({ type: "command_execution", command: "cat README.md" });
+    completed({ type: "file_change", path: "README.md" });
+    completed({ type: "mcp_tool_call", server: "docs", tool: "search" });
+    completed({ type: "agent_message", text: "Done." });
+
+    // 6 completed items total ("steps"); reasoning and the final
+    // agent_message aren't actions, so they don't appear in the tool-call
+    // breakdown, but they still count toward the step total.
+    expect(parsed.stepCount).toBe(6);
+    expect(parsed.toolCalls).toEqual({ commands: 2, fileEdits: 1, other: 1 });
+  });
 });

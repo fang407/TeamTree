@@ -5,19 +5,47 @@ import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
+  RunnerSafetyEvent,
   RunUsage,
   RunnerRequest,
   RunnerResult,
+  ToolCallBreakdown,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+
+interface ActiveCodex {
+  child: ChildProcess;
+  cancelled: boolean;
+  timedOut: boolean;
+  outputExceeded: boolean;
+  settled: Promise<void>;
+  forceKillTimer: NodeJS.Timeout | null;
+  emitSafetyEvent: (event: RunnerSafetyEvent) => Promise<void>;
+}
 
 export interface ParsedEvents {
   messages: string[];
   threadId: string | null;
   usage: RunUsage | null;
   errors: string[];
+  /** Optional so existing call sites that build a plain object literal
+   * (e.g. tests) keep type-checking without needing these fields. */
+  stepCount?: number;
+  toolCalls?: ToolCallBreakdown;
 }
+
+/** Maps `codex exec --json` item.type values that represent a real action
+ * taken against the world to the breakdown bucket they belong in.
+ * "reasoning" and "agent_message" are deliberately excluded — they aren't
+ * actions, so counting them wouldn't tell you anything useful. */
+const TOOL_CALL_BUCKETS: Record<string, keyof ToolCallBreakdown> = {
+  command_execution: "commands",
+  file_change: "fileEdits",
+  mcp_tool_call: "other",
+  web_search: "other",
+  function_call: "other",
+};
 
 export function buildCodexArgs(
   request: RunnerRequest,
@@ -55,6 +83,18 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
 
   if (event.type === "item.completed" && event.item && typeof event.item === "object") {
     const item = event.item as Record<string, unknown>;
+
+    // Every completed work item counts as one "step" — reasoning, commands,
+    // file edits, tool calls, the final message, all of it.
+    parsed.stepCount = (parsed.stepCount ?? 0) + 1;
+
+    const bucket = typeof item.type === "string" ? TOOL_CALL_BUCKETS[item.type] : undefined;
+    if (bucket) {
+      const toolCalls = parsed.toolCalls ?? { commands: 0, fileEdits: 0, other: 0 };
+      toolCalls[bucket] += 1;
+      parsed.toolCalls = toolCalls;
+    }
+
     if (item.type === "agent_message" && typeof item.text === "string") {
       parsed.messages.push(item.text);
     }
@@ -87,17 +127,7 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
 }
 
 export class CodexRunner implements AgentRunner {
-  private readonly active = new Map<
-    string,
-    {
-      child: ChildProcess;
-      cancelled: boolean;
-      timedOut: boolean;
-      outputExceeded: boolean;
-      settled: Promise<void>;
-      forceKillTimer: NodeJS.Timeout | null;
-    }
-  >();
+  private readonly active = new Map<string, ActiveCodex>();
 
   constructor(private readonly config: AppConfig) {}
 
@@ -119,6 +149,10 @@ export class CodexRunner implements AgentRunner {
       return false;
     }
     active.cancelled = true;
+    await active.emitSafetyEvent({
+      decision: "CANCELLED",
+      reason: "User stopped execution",
+    });
     this.terminate(active);
     await active.settled;
     return true;
@@ -132,7 +166,7 @@ export class CodexRunner implements AgentRunner {
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
     const child = spawn(this.config.codexBin, args, {
       cwd: request.workspacePath,
-      env: this.childEnvironment(),
+      env: this.childEnvironment(request.secrets),
       stdio: ["ignore", "pipe", "pipe"],
     });
     const settled = new Promise<void>((resolve) => {
@@ -146,14 +180,24 @@ export class CodexRunner implements AgentRunner {
       outputExceeded: false,
       settled,
       forceKillTimer: null as NodeJS.Timeout | null,
+      emitSafetyEvent: (event: RunnerSafetyEvent) => this.emitSafetyEvent(request, event),
     };
     this.active.set(request.agentId, active);
+
+    // Note: we deliberately don't emit an "Execution started" safety event
+    // here. Spawning the process is not a safety decision — it's an
+    // unconditional lifecycle step with no branch behind it — so treating
+    // it as an ALLOW event just added a no-information entry to the audit
+    // timeline. Real decisions (BLOCK on output-limit, CANCELLED on
+    // timeout/user-stop) are still emitted below where they occur.
 
     const parsed: ParsedEvents = {
       messages: [],
       threadId: request.threadId,
       usage: null,
       errors: [],
+      stepCount: 0,
+      toolCalls: { commands: 0, fileEdits: 0, other: 0 },
     };
     let stdout = "";
     let stderr = "";
@@ -162,7 +206,13 @@ export class CodexRunner implements AgentRunner {
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
       if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
+        if (!active.outputExceeded) {
+          active.outputExceeded = true;
+          void active.emitSafetyEvent({
+            decision: "BLOCK",
+            reason: "Output limit exceeded",
+          });
+        }
         this.terminate(active);
         return;
       }
@@ -185,7 +235,12 @@ export class CodexRunner implements AgentRunner {
     child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
 
     const timeout = setTimeout(() => {
+      if (active.timedOut) return;
       active.timedOut = true;
+      void active.emitSafetyEvent({
+        decision: "CANCELLED",
+        reason: "Timeout exceeded",
+      });
       this.terminate(active);
     }, this.config.codexTimeoutMs);
     timeout.unref();
@@ -219,6 +274,8 @@ export class CodexRunner implements AgentRunner {
         output,
         threadId: parsed.threadId,
         usage: parsed.usage,
+        stepCount: parsed.stepCount ?? 0,
+        toolCalls: parsed.toolCalls ?? { commands: 0, fileEdits: 0, other: 0 },
       };
     } finally {
       clearTimeout(timeout);
@@ -239,7 +296,20 @@ export class CodexRunner implements AgentRunner {
     }
   }
 
-  private childEnvironment(): NodeJS.ProcessEnv {
+  private async emitSafetyEvent(
+    request: RunnerRequest,
+    event: RunnerSafetyEvent,
+  ): Promise<void> {
+    try {
+      await request.onSafetyEvent?.(event);
+    } catch {
+      // Execution safety must not depend on audit-store availability.
+    }
+  }
+
+  private childEnvironment(
+    secrets: Record<string, string> = {},
+  ): NodeJS.ProcessEnv {
     const inheritedNames = [
       "PATH",
       "HOME",
@@ -261,6 +331,20 @@ export class CodexRunner implements AgentRunner {
     };
     for (const name of inheritedNames) {
       if (process.env[name] !== undefined) environment[name] = process.env[name];
+    }
+    const reservedNames = new Set([
+      "PATH",
+      "HOME",
+      "TMPDIR",
+      "CODEX_HOME",
+      "ARK_API_KEY",
+      "NO_COLOR",
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "NO_PROXY",
+    ]);
+    for (const [name, value] of Object.entries(secrets)) {
+      if (!reservedNames.has(name)) environment[name] = value;
     }
     return environment;
   }

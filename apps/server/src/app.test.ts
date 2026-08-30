@@ -6,6 +6,7 @@ import type { AgentService } from "./agent-service.js";
 const service = {
   listAgents: () => [],
   systemInfo: async () => ({}),
+  getSafetyEvents: () => [],
 } as unknown as AgentService;
 
 describe("HTTP boundary", () => {
@@ -23,6 +24,39 @@ describe("HTTP boundary", () => {
       headers: { authorization: "Bearer a-strong-test-token" },
     });
     expect(allowed.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("rejects an invalid bearer token", async () => {
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test", APP_AUTH_TOKEN: "a-strong-test-token" }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/agents",
+      headers: { authorization: "Bearer wrong-token" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "Authentication required" });
+    await app.close();
+  });
+
+  it("rejects a non-Bearer authorization header", async () => {
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test", APP_AUTH_TOKEN: "a-strong-test-token" }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/agents",
+      headers: { authorization: "Basic credentials" },
+    });
+
+    expect(response.statusCode).toBe(401);
     await app.close();
   });
 
@@ -57,6 +91,18 @@ describe("HTTP boundary", () => {
     expect(response.statusCode).toBe(400);
     await app.close();
   });
+
+  it("rejects a missing agent UUID", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/agents/",
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  })
 
   it("rejects an empty agent name", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
@@ -98,6 +144,76 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
+  it("accepts valid secret names and forwards them separately", async () => {
+    let receivedSecrets: Record<string, string> | undefined;
+    const messageService = {
+      ...service,
+      sendMessage: async (_id: string, _content: string, secrets: Record<string, string>) => {
+        receivedSecrets = secrets;
+        return { run: {}, message: {} };
+      },
+    } as unknown as AgentService;
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), messageService);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000/messages",
+      headers: { "content-type": "application/json" },
+      payload: {
+        content: "Use the credentials",
+        secrets: { AWS_KEY: "fake-value", NPM_TOKEN: "another-value" },
+      },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(receivedSecrets).toEqual({
+      AWS_KEY: "fake-value",
+      NPM_TOKEN: "another-value",
+    });
+    await app.close();
+  });
+
+  it("rejects invalid and reserved secret names", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    for (const name of ["aws-key", "PATH", "ARK_API_KEY"]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agents/00000000-0000-0000-0000-000000000000/messages",
+        headers: { "content-type": "application/json" },
+        payload: { content: "test", secrets: { [name]: "value" } },
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    await app.close();
+  });
+
+  it("rejects more than 20 secrets", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const secrets = Object.fromEntries(
+      Array.from({ length: 21 }, (_, index) => [`SECRET_${index}`, "value"]),
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000/messages",
+      headers: { "content-type": "application/json" },
+      payload: { content: "test", secrets },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects secret values larger than 8 KB", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000/messages",
+      headers: { "content-type": "application/json" },
+      payload: { content: "test", secrets: { AWS_KEY: "x".repeat(8_193) } },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
   it("rejects unknown request fields", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
 
@@ -111,4 +227,98 @@ describe("HTTP boundary", () => {
     expect(response.statusCode).toBe(400);
     await app.close();
   });
+
+  it("retrieves safety events for a valid run ID", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runs/00000000-0000-0000-0000-000000000000/safety-events",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      events: [],
+    });
+
+    await app.close();
+  });
+
+  it("rejects an invalid safety-event run ID", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runs/not-a-uuid/safety-events",
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("protects safety events with authentication", async () => {
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "test",
+        APP_AUTH_TOKEN: "a-strong-test-token",
+      }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runs/00000000-0000-0000-0000-000000000000/safety-events",
+    });
+
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("does not expose raw prompt or secret fields in safety events", async () => {
+    const secret = "sk-" + "a".repeat(24);
+    const eventService = {
+      ...service,
+      getSafetyEvents: () => [
+        {
+          id: "event-id",
+          runId: "00000000-0000-0000-0000-000000000000",
+          boundary: "SERVICE",
+          decision: "REDACT",
+          reason: "Secret removed from trace",
+          timestamp: new Date().toISOString(),
+          prompt: `Use ${secret}`,
+          secret,
+        },
+      ],
+    } as unknown as AgentService;
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), eventService);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runs/00000000-0000-0000-0000-000000000000/safety-events",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain(secret);
+    expect(response.body).not.toContain("prompt");
+    expect(response.body).not.toContain("secret");
+    await app.close();
+  });
+
+  it("does not expose submitted secrets in validation errors", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const secret = "sk-" + "b".repeat(24);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { "content-type": "application/json" },
+      payload: { name: "", apiKey: secret },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).not.toContain(secret);
+    await app.close();
+  });
+
 });

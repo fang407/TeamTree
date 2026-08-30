@@ -146,6 +146,7 @@ if [[ "$codex_sandbox_mode" == "workspace-write" ]] \
 fi
 
 export NODE_ENV=production
+export ALLOW_PARTIAL_SECRET_REDACTION=true
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-3000}"
 export CODEX_SANDBOX_MODE="$codex_sandbox_mode"

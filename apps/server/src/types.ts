@@ -53,6 +53,12 @@ export interface RunUsage {
   outputTokens?: number;
 }
 
+export interface ToolCallBreakdown {
+  commands: number;
+  fileEdits: number;
+  other: number;
+}
+
 export interface AgentRun {
   id: string;
   agentId: string;
@@ -61,6 +67,8 @@ export interface AgentRun {
   output: string | null;
   error: string | null;
   usage: RunUsage | null;
+  stepCount: number | null;
+  toolCalls: ToolCallBreakdown | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -90,6 +98,28 @@ export interface RunnerResult {
   output: string;
   threadId: string | null;
   usage: RunUsage | null;
+  /**
+   * Count of every completed Codex work item (reasoning, commands, file
+   * changes, tool calls, the final message, etc). A coarse "how much did
+   * the agent do" signal. Optional so runner implementations/mocks that
+   * don't track this can omit it — AgentService falls back to null
+   * ("not reported") in that case.
+   */
+  stepCount?: number;
+  /**
+   * Breakdown of real actions taken against the world during this run:
+   * shell commands, file edits, and everything else (MCP tool calls, web
+   * search). Excludes reasoning and the final agent_message — those aren't
+   * "actions", so counting them wouldn't tell you anything useful. Optional
+   * so runner implementations/mocks that don't track this can omit it —
+   * AgentService falls back to null ("not reported") in that case.
+   */
+  toolCalls?: ToolCallBreakdown;
+}
+
+export interface RunnerSafetyEvent {
+  decision: Extract<SafetyDecision, "ALLOW" | "BLOCK" | "CANCELLED">;
+  reason: string;
 }
 
 export interface RunnerRequest {
@@ -97,6 +127,8 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  secrets?: Record<string, string>;
+  onSafetyEvent?: (event: RunnerSafetyEvent) => Promise<void>;
 }
 
 export interface AgentRunner {

@@ -1,5 +1,24 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "blocked";
+
+export type SafetyBoundary = "API" | "SERVICE" | "RUNNER";
+export type SafetyDecision = "ALLOW" | "BLOCK" | "REDACT" | "CANCELLED";
+
+export interface SafetyEvent {
+  id: string;
+  runId?: string;
+  agentId?: string;
+  boundary: SafetyBoundary;
+  decision: SafetyDecision;
+  reason: string;
+  timestamp: string;
+}
 
 export interface Agent {
   id: string;
@@ -35,6 +54,14 @@ export interface AgentRun {
     cachedInputTokens?: number;
     outputTokens?: number;
   } | null;
+  stepCount: number | null;
+  toolCalls: {
+    commands: number;
+    fileEdits: number;
+    other: number;
+  } | null;
+  startedAt: string | null;
+  completedAt: string | null;
   createdAt: string;
 }
 

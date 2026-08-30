@@ -62,3 +62,40 @@ raw prompts, credentials, vault mappings, or CredData samples.
   main-branch `AgentService` expects a separate `SafetyMiddleware.evaluate()`
   adapter, so full-repository type checking is deferred until that integration
   work is explicitly approved.
+
+## 2026-08-30 - Main middleware integration
+
+### Updated
+
+- `apps/server/src/safety-middleware.ts`
+- `apps/server/src/secret-confidence.ts`
+- `apps/server/src/patterns/secretPatterns.ts`
+- `apps/server/src/agent-service.ts`
+- `apps/server/src/agent-service.test.ts`
+- `apps/server/src/safety-middleware.test.ts`
+
+### Change
+
+- Kept the current main-branch provider, PII, and prompt-injection rules as
+  the detection baseline.
+- Added a transient `SafetyVault` path which replaces inline secret/PII spans
+  with opaque placeholders before the Runner/LLM receives the prompt. The
+  persisted trace remains the stable `[REDACTED_SECRET]` / `[REDACTED_PII]`
+  representation.
+- Added the offline CredData-derived logistic confidence calculation as a
+  second gate for generic credential assignments. UUIDs, Git-like digests,
+  and ordinary Base64 remain suppressed to reduce false positives.
+- Extended generic API-key field recognition to names such as `ARK_API_KEY`.
+- Preserved generic credential field names while replacing only their values,
+  so the LLM can safely refer to the separately supplied environment variable.
+
+### Safety boundary
+
+- Vault mappings remain process-memory only and are not exposed through the
+  API or event records. The existing explicit `secrets` mechanism remains the
+  only supported way to supply a value to an execution environment.
+
+### Verification
+
+- `npm run typecheck` completed successfully.
+- `npm run test` completed successfully: 7 test files and 105 tests passed.

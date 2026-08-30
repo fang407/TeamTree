@@ -5,9 +5,11 @@ import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
+  RunnerSafetyEvent,
   RunUsage,
   RunnerRequest,
   RunnerResult,
+  ToolCallBreakdown,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -20,6 +22,7 @@ interface ActiveContainer {
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
+  emitSafetyEvent: (event: RunnerSafetyEvent) => Promise<void>;
 }
 
 interface ParsedEvents {
@@ -27,6 +30,8 @@ interface ParsedEvents {
   threadId: string | null;
   usage: RunUsage | null;
   errors: string[];
+  stepCount?: number;
+  toolCalls?: ToolCallBreakdown;
 }
 
 export function containerName(agentId: string, instanceId = "default"): string {
@@ -70,6 +75,22 @@ export function buildContainerRunArgs(
     config.containerUser,
     "--env",
     "ARK_API_KEY",
+    ...Object.keys(request.secrets ?? {})
+      .filter(
+        (name) =>
+          !new Set([
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "CODEX_HOME",
+            "ARK_API_KEY",
+            "NO_COLOR",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+          ]).has(name),
+      )
+      .flatMap((name) => ["--env", name]),
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",
@@ -115,6 +136,10 @@ export class ContainerCodexRunner implements AgentRunner {
     if (!active) return false;
 
     active.cancelled = true;
+    await active.emitSafetyEvent({
+      decision: "CANCELLED",
+      reason: "User stopped execution",
+    });
     await this.removeContainer(active);
     await active.settled;
     return true;
@@ -147,7 +172,7 @@ export class ContainerCodexRunner implements AgentRunner {
       buildContainerRunArgs(request, this.config),
       {
         cwd: request.workspacePath,
-        env: this.childEnvironment(),
+        env: this.childEnvironment(request.secrets),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -163,14 +188,23 @@ export class ContainerCodexRunner implements AgentRunner {
       outputExceeded: false,
       settled,
       termination: null,
+      emitSafetyEvent: (event: RunnerSafetyEvent) => this.emitSafetyEvent(request, event),
     };
     this.active.set(request.agentId, active);
+
+    // See codex-runner.ts: intentionally no "Execution started" safety
+    // event here — spawning the container isn't a safety decision, just an
+    // unconditional lifecycle step, so it added no-information noise to
+    // the audit timeline. Real decisions (BLOCK on output-limit, CANCELLED
+    // on timeout/user-stop) are still emitted below where they occur.
 
     const parsed: ParsedEvents = {
       messages: [],
       threadId: request.threadId,
       usage: null,
       errors: [],
+      stepCount: 0,
+      toolCalls: { commands: 0, fileEdits: 0, other: 0 },
     };
     let stdout = "";
     let stderr = "";
@@ -179,7 +213,13 @@ export class ContainerCodexRunner implements AgentRunner {
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
       if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
+        if (!active.outputExceeded) {
+          active.outputExceeded = true;
+          void active.emitSafetyEvent({
+            decision: "BLOCK",
+            reason: "Output limit exceeded",
+          });
+        }
         void this.removeContainer(active);
         return;
       }
@@ -198,7 +238,12 @@ export class ContainerCodexRunner implements AgentRunner {
     child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
 
     const timeout = setTimeout(() => {
+      if (active.timedOut) return;
       active.timedOut = true;
+      void active.emitSafetyEvent({
+        decision: "CANCELLED",
+        reason: "Timeout exceeded",
+      });
       void this.removeContainer(active);
     }, this.config.codexTimeoutMs);
     timeout.unref();
@@ -228,14 +273,22 @@ export class ContainerCodexRunner implements AgentRunner {
       }
       const output = parsed.messages.at(-1)?.trim();
       if (!output) throw new Error("Codex completed without an agent message");
-      return { output, threadId: parsed.threadId, usage: parsed.usage };
+      return {
+        output,
+        threadId: parsed.threadId,
+        usage: parsed.usage,
+        stepCount: parsed.stepCount ?? 0,
+        toolCalls: parsed.toolCalls ?? { commands: 0, fileEdits: 0, other: 0 },
+      };
     } finally {
       clearTimeout(timeout);
       this.active.delete(request.agentId);
     }
   }
 
-  private childEnvironment(): NodeJS.ProcessEnv {
+  private childEnvironment(
+    secrets: Record<string, string> = {},
+  ): NodeJS.ProcessEnv {
     const environment: NodeJS.ProcessEnv = {
       ARK_API_KEY: this.config.arkApiKey,
       NO_COLOR: "1",
@@ -250,6 +303,31 @@ export class ContainerCodexRunner implements AgentRunner {
     ] as const) {
       if (process.env[name] !== undefined) environment[name] = process.env[name];
     }
+    const reservedNames = new Set([
+      "PATH",
+      "HOME",
+      "TMPDIR",
+      "CODEX_HOME",
+      "ARK_API_KEY",
+      "NO_COLOR",
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "NO_PROXY",
+    ]);
+    for (const [name, value] of Object.entries(secrets)) {
+      if (!reservedNames.has(name)) environment[name] = value;
+    }
     return environment;
+  }
+
+  private async emitSafetyEvent(
+    request: RunnerRequest,
+    event: RunnerSafetyEvent,
+  ): Promise<void> {
+    try {
+      await request.onSafetyEvent?.(event);
+    } catch {
+      // Execution safety must not depend on audit-store availability.
+    }
   }
 }

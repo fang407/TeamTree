@@ -44,6 +44,24 @@ const envSchema = z.object({
     .string()
     .url()
     .default("https://ark.cn-beijing.volces.com/api/v3"),
+  ALLOW_PARTIAL_SECRET_REDACTION: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  COMPLIANCE_FRAMEWORKS: z
+    .string()
+    // Unset → GDPR+CCPA (see safety-middleware.ts DEFAULT_POLICY_CONFIG for
+    // rationale). To fully opt out, set this explicitly to an empty string
+    // rather than leaving it unset — that's the one case not covered by
+    // this default.
+    .default("GDPR,CCPA")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim().toUpperCase())
+        .filter(Boolean),
+    )
+    .pipe(z.array(z.enum(["GDPR", "HIPAA", "CCPA", "PCI_DSS"]))),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -87,6 +105,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
     arkModel: env.ARK_MODEL?.trim() ?? "",
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
+    allowPartialSecretRedaction: env.ALLOW_PARTIAL_SECRET_REDACTION,
+    complianceFrameworks: env.COMPLIANCE_FRAMEWORKS,
     nodeEnv: env.NODE_ENV,
   };
 }

@@ -1,297 +1,511 @@
+import {
+  SECRET_PATTERNS,
+  type SecretPattern,
+} from "./patterns/secretPatterns.js";
+
+import {
+  PROMPT_INJECTION_PATTERNS,
+  type InjectionPattern,
+} from "./patterns/promptInjectionPatterns.js";
+
+import {
+  BASELINE_PII_PATTERNS,
+  FRAMEWORK_PII_PATTERNS,
+  type ComplianceFramework,
+  type PiiPattern,
+} from "./patterns/compliancePatterns.js";
+
+import {
+  normalizeForInjectionScan,
+  shannonEntropy,
+} from "./utils/textUtils.js";
+import { secretConfidence } from "./secret-confidence.js";
 import { randomUUID } from "node:crypto";
-import type { SafetyDecision } from "./types.js";
 
-export type RedactionDetector =
-  | "api_key"
-  | "bearer_token"
-  | "credential_field"
-  | "email"
-  | "credit_card"
-  | "high_entropy_secret";
+const REDACTED_SECRET = "[REDACTED_SECRET]";
+const REDACTED_PII = "[REDACTED_PII]";
 
-export interface RedactionFinding {
-  detector: RedactionDetector;
-  risk: "medium" | "high";
-  location: "text" | "field";
-  confidence: number;
-}
+type FindingCategory =
+  | "secret"
+  | "pii"
+  | "prompt_injection";
 
-export interface RedactionResult<T> {
-  value: T;
-  findings: RedactionFinding[];
-}
+type Severity =
+  | "low"
+  | "medium"
+  | "high"
+  | "critical";
 
-interface TextDetector {
-  detector: RedactionDetector;
-  risk: RedactionFinding["risk"];
-  pattern: RegExp;
-}
-
-const TEXT_DETECTORS: readonly TextDetector[] = [
-  {
-    detector: "api_key",
-    risk: "high",
-    pattern: /\b(?:sk|ghp|github_pat|AKIA)[A-Za-z0-9_-]{16,}\b/g,
-  },
-  {
-    detector: "bearer_token",
-    risk: "high",
-    pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi,
-  },
-  {
-    detector: "email",
-    risk: "medium",
-    pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
-  },
-  {
-    detector: "credit_card",
-    risk: "high",
-    pattern: /\b(?:\d[ -]?){13,19}\b/g,
-  },
-];
-
-const SENSITIVE_FIELD_NAME = /(?:api[_-]?key|authorization|bearer|secret|token|password|passwd|credential)/i;
-const HIGH_ENTROPY_CANDIDATE = /\b[A-Za-z0-9_+/=-]{20,160}(?![A-Za-z0-9_+/=-])/g;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const HEX_DIGEST = /^(?:[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$/i;
-
-/**
- * Trained locally from 14,274 labelled CredData value spans (80/20 split).
- * Validation: precision 0.9346, recall 0.7566, F1 0.8363. These values are
- * numeric model artefacts only; no CredData sample is shipped with this SDK.
- */
-export const TRAINED_SECRET_LOGIT_MODEL = {
-  bias: -1.14011961,
-  entropy: -0.24854544,
-  length: 0.47888893,
-  mixedClasses: 0.32521857,
-  knownSecretPrefix: 0.12717258,
-  uuid: 0.08022316,
-  hexDigest: 0.59622159,
-  ordinaryBase64: 2.49595596,
-} as const;
-
-export interface RedactionOptions {
-  /** Candidates below this score are retained to reduce false positives. */
-  minConfidence?: number;
-}
-
-const BLOCKED_PROMPT_RULES: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
-  {
-    pattern: /\brm\s+-[A-Za-z]*r[A-Za-z]*f[A-Za-z]*\s+(?:\/|~|\$HOME)(?:\s|$)/i,
-    reason: "Destructive recursive deletion of a filesystem root is not allowed",
-  },
-  {
-    pattern: /\b(?:curl|wget)\b[^\n|]*\|\s*(?:ba)?sh\b/i,
-    reason: "Piping downloaded content directly into a shell is not allowed",
-  },
-];
-
-export interface ExecutionSafetyResult {
-  decision: Extract<SafetyDecision, "ALLOW" | "BLOCK" | "REDACT">;
-  reason: string;
-  safePrompt: string;
-  findings: RedactionFinding[];
-  vault: SafetyVault;
-}
-
-export class SafetyBlockedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SafetyBlockedError";
-  }
+interface Finding {
+  id: string;
+  category: FindingCategory;
+  severity: Severity;
+  start: number;
+  end: number;
+  replacement: string;
 }
 
 /**
- * A per-run, in-memory vault. It replaces a detected value with a unique,
- * opaque placeholder. Only the holder of this instance can restore it.
- * Never serialize or log this object: its mapping contains the original data.
+ * Ephemeral, in-memory mapping used only while a request is executing.
+ *
+ * It is deliberately not returned by `evaluate`, serialized, logged, or
+ * persisted. The current product sends opaque placeholders to the LLM and
+ * uses the existing `secrets` channel for values a tool legitimately needs.
  */
 export class SafetyVault {
-  private readonly originalToPlaceholder = new Map<string, string>();
-  private readonly placeholderToOriginal = new Map<string, string>();
-  private readonly minConfidence: number;
+  private readonly values = new Map<string, string>();
 
-  constructor(options: RedactionOptions = {}) {
-    this.minConfidence = clamp(options.minConfidence ?? 0.72, 0, 1);
+  replace(value: string, kind = "SECRET"): string {
+    const existing = this.values.get(value);
+    if (existing) return existing;
+
+    const placeholder = `[PRIVATE_${kind}_${randomUUID()}]`;
+    this.values.set(value, placeholder);
+    return placeholder;
   }
 
-  redactText(text: string): RedactionResult<string> {
-    const findings: RedactionFinding[] = [];
-    let safeText = text;
-
-    for (const detector of TEXT_DETECTORS) {
-      safeText = safeText.replace(detector.pattern, (value) => {
-        findings.push({
-          detector: detector.detector,
-          risk: detector.risk,
-          location: "text",
-          confidence: 1,
-        });
-        return this.placeholderFor(value, detector.detector);
-      });
-    }
-
-    safeText = safeText.replace(HIGH_ENTROPY_CANDIDATE, (value) => {
-      const confidence = secretConfidence(value);
-      if (confidence < this.minConfidence) return value;
-      findings.push({
-        detector: "high_entropy_secret",
-        risk: "high",
-        location: "text",
-        confidence,
-      });
-      return this.placeholderFor(value, "high_entropy_secret");
-    });
-
-    return { value: safeText, findings };
-  }
-
-  redactValue<T>(input: T): RedactionResult<T> {
-    const findings: RedactionFinding[] = [];
-    const value = this.redactUnknown(input, findings) as T;
-    return { value, findings };
-  }
-
-  restoreText(text: string): string {
-    let restored = text;
-    for (const [placeholder, original] of this.placeholderToOriginal) {
+  /** Intended only for a trusted, in-memory execution boundary. */
+  restoreText(value: string): string {
+    let restored = value;
+    for (const [original, placeholder] of this.values) {
       restored = restored.replaceAll(placeholder, original);
     }
     return restored;
   }
-
-  private redactUnknown(value: unknown, findings: RedactionFinding[]): unknown {
-    if (typeof value === "string") {
-      const result = this.redactText(value);
-      findings.push(...result.findings);
-      return result.value;
-    }
-    if (Array.isArray(value)) {
-      return value.map((item) => this.redactUnknown(item, findings));
-    }
-    if (!isPlainObject(value)) return value;
-
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => {
-        if (SENSITIVE_FIELD_NAME.test(key) && item !== null && item !== undefined) {
-          findings.push({
-            detector: "credential_field",
-            risk: "high",
-            location: "field",
-            confidence: 1,
-          });
-          return [key, this.placeholderFor(String(item), "credential_field")];
-        }
-        return [key, this.redactUnknown(item, findings)];
-      }),
-    );
-  }
-
-  private placeholderFor(original: string, detector: RedactionDetector): string {
-    const existing = this.originalToPlaceholder.get(original);
-    if (existing) return existing;
-
-    const placeholder = "[PRIVATE_" + detector.toUpperCase() + "_" + randomUUID() + "]";
-    this.originalToPlaceholder.set(original, placeholder);
-    this.placeholderToOriginal.set(placeholder, original);
-    return placeholder;
-  }
 }
 
-/** Creates a masked copy without retaining a vault. Use a SafetyVault for restoration. */
-export function redact<T>(input: T): T {
-  return new SafetyVault().redactValue(input).value;
-}
+export interface SafetyPolicyConfig {
+  redactionEnabled: boolean;
+  promptSafetyEnabled: boolean;
 
-/** Performs the Runner's pre-execution prompt check and creates its vault. */
-export function checkExecutionPrompt(
-  prompt: string,
-  options?: RedactionOptions,
-): ExecutionSafetyResult {
-  const vault = new SafetyVault(options);
-  const { value: safePrompt, findings } = vault.redactText(prompt);
-  const blockedRule = BLOCKED_PROMPT_RULES.find(({ pattern }) => pattern.test(prompt));
+  compliance: {
+    /**
+     * Which compliance frameworks' PII identifier sets are active. Empty
+     * array = baseline only (email). Multiple frameworks can be enabled at
+     * once — realistic for a deployment spanning jurisdictions or product
+     * lines. See patterns/compliancePatterns.ts for what each framework
+     * actually gates, and its stated limitations.
+     */
+    frameworks: ComplianceFramework[];
+  };
 
-  if (blockedRule) {
-    return { decision: "BLOCK", reason: blockedRule.reason, safePrompt, findings, vault };
-  }
-  if (findings.length > 0) {
-    return {
-      decision: "REDACT",
-      reason: "Sensitive values were replaced with private placeholders",
-      safePrompt,
-      findings,
-      vault,
-    };
-  }
-  return {
-    decision: "ALLOW",
-    reason: "Prompt passed the Runner safety policy",
-    safePrompt,
-    findings,
-    vault,
+  injection: {
+    blockOn: Severity[];
+  };
+
+  /** Optional confidence gate for generic credential assignments. */
+  unknownSecretDetection?: {
+    enabled?: boolean;
+    minConfidence?: number;
   };
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object") return false;
-  return Object.getPrototypeOf(value) === Object.prototype;
+export const DEFAULT_POLICY_CONFIG: SafetyPolicyConfig = {
+  redactionEnabled: true,
+  promptSafetyEnabled: true,
+
+  compliance: {
+    // GDPR + CCPA cover the two jurisdictions any consumer product with
+    // EU or US(-CA) users almost certainly needs by default. HIPAA and
+    // PCI_DSS stay opt-in — they only apply if the deployment actually
+    // handles health or payment-card data, which this middleware can't
+    // know on its own. Note: because CCPA's "personal information"
+    // definition is broad, this default activates most patterns except
+    // the two that are HIPAA-exclusive (medical-record-number,
+    // medicare-beneficiary-id) — see patterns/compliancePatterns.ts for
+    // the full per-pattern framework tagging.
+    frameworks: ["GDPR", "CCPA"],
+  },
+
+  injection: {
+    blockOn: ["critical", "high"],
+  },
+
+  unknownSecretDetection: {
+    enabled: true,
+    minConfidence: 0.2,
+  },
+};
+
+export interface SafetyFindingSummary {
+  id: string;
+  category: FindingCategory;
+  severity: Severity;
 }
 
-/** Shannon entropy in bits per character. Higher scores indicate less repetition. */
-export function shannonEntropy(value: string): number {
-  if (value.length === 0) return 0;
-  const frequencies = new Map<string, number>();
-  for (const character of value) {
-    frequencies.set(character, (frequencies.get(character) ?? 0) + 1);
+export interface SafetyCheckResult {
+  decision: "ALLOW" | "BLOCK";
+  reason: string;
+  redactedPrompt: string;
+  /** Safe for the LLM, but intentionally not persisted. */
+  executionPrompt: string;
+  wasRedacted: boolean;
+
+  /**
+   * Contains rule metadata only.
+   * Never contains the matched secret/PII text.
+   */
+  findings: SafetyFindingSummary[];
+}
+
+export class SafetyMiddleware {
+  constructor(
+    private readonly config: SafetyPolicyConfig =
+      DEFAULT_POLICY_CONFIG,
+  ) {}
+
+  async evaluate(
+    prompt: string,
+  ): Promise<SafetyCheckResult> {
+    const findings: Finding[] = [];
+
+    // Stage 1: secret + PII detection on the raw prompt.
+    //
+    // Raw text is required here because offsets are later
+    // used to redact the original prompt.
+    if (this.config.redactionEnabled) {
+      findings.push(...this.detectSecrets(prompt));
+      findings.push(...this.detectPii(prompt));
+    }
+
+    // Stage 2: prompt-injection detection.
+    //
+    // Injection scanning can safely use normalized text
+    // because injection findings are never used for
+    // redaction offsets.
+    let injectionFindings: Finding[] = [];
+
+    if (this.config.promptSafetyEnabled) {
+      const normalizedPrompt =
+        normalizeForInjectionScan(prompt);
+
+      injectionFindings =
+        this.detectPromptInjection(normalizedPrompt);
+
+      findings.push(...injectionFindings);
+    }
+
+    // Stage 3: deterministic policy decision.
+    const decision =
+      this.decide(injectionFindings);
+
+    // Stage 4: redact secrets and PII only.
+    const redactionFindings = findings.filter(
+      (finding) =>
+        finding.category !== "prompt_injection",
+    );
+
+    const redactedPrompt = this.redact(
+      prompt,
+      redactionFindings,
+    );
+    const executionPrompt = this.vaultForExecution(
+      prompt,
+      redactionFindings,
+    );
+
+    return {
+      decision,
+      reason: this.buildReason(
+        decision,
+        injectionFindings,
+      ),
+      redactedPrompt,
+      executionPrompt,
+      wasRedacted: redactedPrompt !== prompt,
+
+      // Expose metadata only, never matched text.
+      findings: findings.map(
+        ({ id, category, severity }) => ({
+          id,
+          category,
+          severity,
+        }),
+      ),
+    };
   }
-  return [...frequencies.values()].reduce((entropy, count) => {
-    const probability = count / value.length;
-    return entropy - probability * Math.log2(probability);
-  }, 0);
-}
 
-/**
- * Offline logistic-regression score for unknown high-entropy strings. The
- * coefficients are trained from CredData; runtime guardrails still prevent
- * known non-secret identifiers from being promoted by corpus bias.
- */
-export function secretConfidence(candidate: string): number {
-  const compact = candidate.replace(/[\s-]/g, "");
-  const length = Math.min(compact.length, 128) / 128;
-  const entropy = Math.min(shannonEntropy(compact), 6) / 6;
-  const mixedClasses = Number(
-    /[a-z]/.test(compact) && /[A-Z]/.test(compact) && /\d/.test(compact),
-  );
-  const knownSecretPrefix = Number(/^(?:sk|ghp|github_pat|AKIA|xox[baprs])-?/i.test(compact));
-  const uuid = Number(UUID.test(candidate));
-  const digest = Number(HEX_DIGEST.test(compact));
-  const base64 = Number(isOrdinaryBase64(compact));
+  private decide(
+    injectionFindings: Finding[],
+  ): SafetyCheckResult["decision"] {
+    const shouldBlock = injectionFindings.some(
+      (finding) =>
+        this.config.injection.blockOn.includes(
+          finding.severity,
+        ),
+    );
 
-  // CredData intentionally labels some Base64 test fixtures as credentials.
-  // In this product, UUIDs and Git-like digests are never secrets, while an
-  // otherwise uncontextualized Base64 blob needs a stricter confidence bar.
-  if (uuid || digest) return 0;
+    return shouldBlock
+      ? "BLOCK"
+      : "ALLOW";
+  }
 
-  const logit =
-    TRAINED_SECRET_LOGIT_MODEL.bias +
-    TRAINED_SECRET_LOGIT_MODEL.entropy * entropy +
-    TRAINED_SECRET_LOGIT_MODEL.length * length +
-    TRAINED_SECRET_LOGIT_MODEL.mixedClasses * mixedClasses +
-    TRAINED_SECRET_LOGIT_MODEL.knownSecretPrefix * knownSecretPrefix +
-    TRAINED_SECRET_LOGIT_MODEL.uuid * uuid +
-    TRAINED_SECRET_LOGIT_MODEL.hexDigest * digest +
-    TRAINED_SECRET_LOGIT_MODEL.ordinaryBase64 * base64;
-  const score = 1 / (1 + Math.exp(-logit));
-  return base64 && !knownSecretPrefix ? score * 0.2 : score;
-}
+  private buildReason(
+    decision: SafetyCheckResult["decision"],
+    injectionFindings: Finding[],
+  ): string {
+    if (decision === "ALLOW") {
+      return "Request passed safety checks";
+    }
 
-function isOrdinaryBase64(value: string): boolean {
-  if (value.length < 24 || value.length % 4 !== 0) return false;
-  return /^[A-Za-z0-9+/]+={0,2}$/.test(value);
-}
+    const matchedRuleIds = [
+      ...new Set(
+        injectionFindings
+          .filter((finding) =>
+            this.config.injection.blockOn.includes(
+              finding.severity,
+            ),
+          )
+          .map((finding) => finding.id),
+      ),
+    ];
 
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(maximum, Math.max(minimum, value));
+    return `Blocked: matched ${
+      matchedRuleIds.join(", ") || "policy rule"
+    }`;
+  }
+
+  private detectSecrets(
+    prompt: string,
+  ): Finding[] {
+    const findings: Finding[] = [];
+
+    for (
+      const pattern of SECRET_PATTERNS as SecretPattern[]
+    ) {
+      for (const match of prompt.matchAll(pattern.regex)) {
+        if (match.index === undefined) {
+          continue;
+        }
+
+        if (
+          pattern.entropyThreshold !== undefined
+        ) {
+          const capturedValue =
+            match[1] ?? match[0];
+
+          if (
+            shannonEntropy(capturedValue) <
+            pattern.entropyThreshold
+          ) {
+            continue;
+          }
+
+          if (
+            pattern.id === "generic-secret-assignment" &&
+            !this.isLikelyUnknownSecret(capturedValue)
+          ) {
+            continue;
+          }
+        }
+
+        const capturedValue = match[1];
+        const captureOffset =
+          pattern.id === "generic-secret-assignment" && capturedValue
+            ? match[0].lastIndexOf(capturedValue)
+            : 0;
+        const start = match.index + captureOffset;
+        const end = capturedValue
+          ? start + capturedValue.length
+          : match.index + match[0].length;
+
+        findings.push({
+          id: pattern.id,
+          category: "secret",
+          severity: pattern.severity,
+          start,
+          end,
+          replacement: REDACTED_SECRET,
+        });
+      }
+    }
+
+    return findings;
+  }
+
+  private detectPii(
+    prompt: string,
+  ): Finding[] {
+    const findings: Finding[] = [];
+
+    const activeFrameworks = this.config.compliance.frameworks;
+
+    const activePatterns: PiiPattern[] = [
+      // Baseline patterns (currently just email) are always active,
+      // independent of framework selection.
+      ...BASELINE_PII_PATTERNS,
+
+      // Framework-gated patterns only run if at least one of the
+      // pattern's tagged frameworks is enabled in config.
+      ...FRAMEWORK_PII_PATTERNS.filter((pattern) =>
+        pattern.frameworks.some((framework) =>
+          activeFrameworks.includes(framework),
+        ),
+      ),
+    ];
+
+    for (const pattern of activePatterns) {
+      for (const match of prompt.matchAll(pattern.regex)) {
+        if (match.index === undefined) {
+          continue;
+        }
+
+        if (
+          pattern.validate &&
+          !pattern.validate(match[0])
+        ) {
+          continue;
+        }
+
+        findings.push({
+          id: pattern.id,
+          category: "pii",
+          severity: pattern.severity,
+          start: match.index,
+          end: match.index + match[0].length,
+          replacement: REDACTED_PII,
+        });
+      }
+    }
+
+    return findings;
+  }
+
+  private detectPromptInjection(
+    normalizedPrompt: string,
+  ): Finding[] {
+    const findings: Finding[] = [];
+
+    for (
+      const pattern of
+        PROMPT_INJECTION_PATTERNS as InjectionPattern[]
+    ) {
+      for (
+        const match of normalizedPrompt.matchAll(
+          pattern.regex,
+        )
+      ) {
+        if (match.index === undefined) {
+          continue;
+        }
+
+        findings.push({
+          id: pattern.id,
+          category: "prompt_injection",
+          severity: pattern.severity,
+          start: match.index,
+          end: match.index + match[0].length,
+          replacement: "",
+        });
+      }
+    }
+
+    // Cheap compound heuristic for common
+    // encoded-payload execution phrasing.
+    //
+    // Medium severity means it is recorded as a finding
+    // under the default policy but does not BLOCK.
+    if (
+      /\bbase64\b/i.test(normalizedPrompt) &&
+      /\b(?:decode|execute|run)\b/i.test(
+        normalizedPrompt,
+      )
+    ) {
+      findings.push({
+        id: "base64-decode-execute-heuristic",
+        category: "prompt_injection",
+        severity: "medium",
+        start: 0,
+        end: 0,
+        replacement: "",
+      });
+    }
+
+    return findings;
+  }
+
+  redactText(value: string): string {
+    const findings: Finding[] = [];
+
+    if (this.config.redactionEnabled) {
+      findings.push(...this.detectSecrets(value));
+      findings.push(...this.detectPii(value));
+    }
+
+    return this.redact(value, findings);
+  }
+
+  private isLikelyUnknownSecret(value: string): boolean {
+    const detector = this.config.unknownSecretDetection;
+    if (detector?.enabled === false) return true;
+
+    return secretConfidence(value) >= (detector?.minConfidence ?? 0.2);
+  }
+
+  private vaultForExecution(
+    prompt: string,
+    findings: Finding[],
+  ): string {
+    const vault = new SafetyVault();
+    const selected = this.selectNonOverlapping(findings);
+    let result = prompt;
+
+    for (const finding of [...selected].sort((left, right) => right.start - left.start)) {
+      const kind = finding.category === "pii" ? "PII" : "SECRET";
+      const original = prompt.slice(finding.start, finding.end);
+      result = result.slice(0, finding.start) + vault.replace(original, kind) + result.slice(finding.end);
+    }
+
+    return result;
+  }
+
+  private redact(
+    prompt: string,
+    findings: Finding[],
+  ): string {
+    let result = prompt;
+
+    // Selecting which findings to keep must happen left-to-right and must
+    // prefer the longer match when spans start at the same point or one
+    // contains another — otherwise a small pattern nested inside a larger
+    // one (e.g. a "phone number"-shaped digit run inside a Slack token,
+    // which is a real overlap once PII detection runs alongside secret
+    // detection) can silently steal the redaction and leave the outer,
+    // more-specific match un-redacted. Sorting by (start ascending, length
+    // descending) and greedily keeping only non-overlapping spans is the
+    // standard fix for this class of bug.
+    const kept = this.selectNonOverlapping(findings);
+
+    // Now apply the kept, non-overlapping findings. Splicing must happen
+    // right-to-left so replacing one span doesn't shift the offsets of
+    // spans that occur earlier in the text.
+    const byApplicationOrder = [...kept].sort(
+      (left, right) => right.start - left.start,
+    );
+
+    for (const finding of byApplicationOrder) {
+      result =
+        result.slice(0, finding.start) +
+        finding.replacement +
+        result.slice(finding.end);
+    }
+
+    return result;
+  }
+
+  private selectNonOverlapping(findings: Finding[]): Finding[] {
+    const bySelectionOrder = [...findings].sort((left, right) => {
+      if (left.start !== right.start) return left.start - right.start;
+      return (right.end - right.start) - (left.end - left.start);
+    });
+
+    const kept: Finding[] = [];
+    let cursor = 0;
+    for (const finding of bySelectionOrder) {
+      if (finding.start < cursor) continue;
+      kept.push(finding);
+      cursor = finding.end;
+    }
+    return kept;
+  }
 }
