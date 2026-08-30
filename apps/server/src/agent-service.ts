@@ -353,6 +353,14 @@ export class AgentService {
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+
+      await this.recordSafetyEvent({
+        runId: run.id,
+        agentId: agentAtStart.id,
+        boundary: "SERVICE",
+        decision: "ALLOW",
+        reason: "Run completed",
+      });
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
@@ -372,6 +380,14 @@ export class AgentService {
           agent.lastError = cancelled ? null : message;
           agent.updatedAt = completedAt;
         }
+      });
+
+      await this.recordSafetyEvent({
+        runId: run.id,
+        agentId: agentAtStart.id,
+        boundary: "SERVICE",
+        decision: cancelled ? "CANCELLED" : "ALLOW",
+        reason: cancelled ? "Run cancelled" : "Run failed",
       });
     }
   }

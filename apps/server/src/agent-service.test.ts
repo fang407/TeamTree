@@ -12,6 +12,7 @@ import type {
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { SafetyMiddleware } from "./safety-middleware.js";
+import { RunCancelledError } from "./errors.js";
 
 class FakeRunner implements AgentRunner {
   async run(
@@ -385,6 +386,7 @@ describe("Agent lifecycle", () => {
     ).toEqual([
       "REDACT",
       "ALLOW",
+      "ALLOW",
     ]);
 
     expect(
@@ -413,7 +415,7 @@ describe("Agent lifecycle", () => {
     const events =
       service.getSafetyEvents(run.id);
 
-    expect(events).toHaveLength(1);
+    expect(events).toHaveLength(2);
 
     expect(events[0]).toMatchObject({
       runId: run.id,
@@ -421,6 +423,14 @@ describe("Agent lifecycle", () => {
       boundary: "SERVICE",
       decision: "ALLOW",
       reason: "Request passed safety checks",
+    });
+
+    expect(events[1]).toMatchObject({
+      runId: run.id,
+      agentId: agent.id,
+      boundary: "SERVICE",
+      decision: "ALLOW",
+      reason: "Run completed",
     });
   });
 
@@ -476,6 +486,84 @@ describe("Agent lifecycle", () => {
         event.reason.includes(secret),
       ),
     ).toBe(false);
+  });
+
+  it("records a run completed audit event", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Completion Audit" });
+    const { run } = await service.sendMessage(agent.id, "Explain this project.");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const events = service.getSafetyEvents(run.id);
+    expect(events.map((event) => ({
+      decision: event.decision,
+      reason: event.reason,
+    }))).toEqual([
+      { decision: "ALLOW", reason: "Request passed safety checks" },
+      { decision: "ALLOW", reason: "Run completed" },
+    ]);
+  });
+
+  it("records a sanitized run failed audit event", async () => {
+    const runner: AgentRunner = {
+      run: async () => {
+        throw new Error("Runner failed with sensitive internal details");
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Failure Audit" });
+    const { run } = await service.sendMessage(agent.id, "Explain this project.");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+
+    const events = service.getSafetyEvents(run.id);
+    expect(events.map((event) => ({
+      decision: event.decision,
+      reason: event.reason,
+    }))).toEqual([
+      { decision: "ALLOW", reason: "Request passed safety checks" },
+      { decision: "ALLOW", reason: "Run failed" },
+    ]);
+
+    expect(events.some((event) =>
+      event.reason.includes("sensitive internal details"),
+    )).toBe(false);
+  });
+
+  it("records a run cancelled audit event", async () => {
+    let rejectRun!: (error: Error) => void;
+
+    const pending = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectRun = reject;
+    });
+
+    const runner: AgentRunner = {
+      run: () => pending,
+      cancel: async () => {
+        rejectRun(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Cancellation Audit" });
+    const { run } = await service.sendMessage(agent.id, "Explain this project.");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("running");
+    await service.stopAgent(agent.id);
+    await expect.poll(() => service.getRun(run.id).status).toBe("cancelled");
+
+    const events = service.getSafetyEvents(run.id);
+    expect(events.some((event) =>
+      event.boundary === "SERVICE" &&
+      event.decision === "CANCELLED" &&
+      event.reason === "Run cancelled",
+    )).toBe(true);
   });
 
   it("rejects safety event lookup for an unknown run", async () => {
