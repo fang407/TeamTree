@@ -18,6 +18,11 @@ const emptyForm = {
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
 };
 
+type SecretEntry = {
+  name: string;
+  value: string;
+};
+
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
@@ -59,6 +64,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
+  const [secrets, setSecrets] = useState<SecretEntry[]>([]);
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [safetyEvents, setSafetyEvents] = useState<SafetyEvent[]>([]);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
@@ -275,10 +281,16 @@ export default function App() {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
     const content = prompt.trim();
+    const secretMap = Object.fromEntries(
+      secrets
+        .filter((secret) => secret.name.trim() && secret.value)
+        .map((secret) => [secret.name.trim(), secret.value]),
+    );
     setPrompt("");
+    setSecrets([]);
     setError(null);
     try {
-      const result = await api.sendMessage(selected.id, content);
+      const result = await api.sendMessage(selected.id, content, secretMap);
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
@@ -632,6 +644,63 @@ export default function App() {
                   }
                   rows={3}
                 />
+                <div className="secret-inputs">
+                  {secrets.map((secret, index) => (
+                    <div className="secret-row" key={index}>
+                      <input
+                        type="text"
+                        value={secret.name}
+                        onChange={(event) => {
+                          const name = event.target.value;
+                          setSecrets((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index ? { ...item, name } : item,
+                            ),
+                          );
+                        }}
+                        placeholder="Secret name (e.g. API_KEY)"
+                        autoComplete="off"
+                        spellCheck={false}
+                        aria-label={`Secret ${index + 1} name`}
+                      />
+                      <input
+                        type="password"
+                        value={secret.value}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setSecrets((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index ? { ...item, value } : item,
+                            ),
+                          );
+                        }}
+                        placeholder="Secret value"
+                        autoComplete="off"
+                        spellCheck={false}
+                        aria-label={`Secret ${index + 1} value`}
+                      />
+                      <button
+                        className="button button-ghost secret-remove"
+                        type="button"
+                        onClick={() =>
+                          setSecrets((current) =>
+                            current.filter((_, itemIndex) => itemIndex !== index),
+                          )
+                        }
+                        aria-label={`Remove secret ${index + 1}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    className="button button-ghost secret-add"
+                    type="button"
+                    onClick={() => setSecrets((current) => [...current, { name: "", value: "" }])}
+                  >
+                    + Add secret
+                  </button>
+                </div>
                 <div className="composer-footer">
                   <span>
                     Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
