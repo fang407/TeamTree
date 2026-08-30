@@ -24,6 +24,17 @@ type SecretEntry = {
   visible: boolean;
 };
 
+type SecretPreset = {
+  name: string;
+  keys: string[];
+};
+
+const secretPresets: SecretPreset[] = [
+  { name: "AWS deploy", keys: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] },
+  { name: "GitHub", keys: ["GITHUB_TOKEN"] },
+  { name: "NPM", keys: ["NPM_TOKEN"] },
+];
+
 const secretNamePattern = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 function formatTime(value: string): string {
@@ -68,6 +79,7 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [secrets, setSecrets] = useState<SecretEntry[]>([]);
+  const [selectedPreset, setSelectedPreset] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [safetyEvents, setSafetyEvents] = useState<SafetyEvent[]>([]);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
@@ -157,6 +169,8 @@ export default function App() {
   useEffect(() => {
     setActiveRun(null);
     setSafetyEvents([]);
+    setSecrets([]);
+    setSelectedPreset("");
     setShowSettings(false);
 
     if (!selectedId) {
@@ -185,6 +199,48 @@ export default function App() {
         setLoadingRun(false);
       });
   }, [refreshMessages, refreshSafetyEvents, selectedId]);
+
+  const loadSecretPreset = (presetName: string) => {
+    setSelectedPreset(presetName);
+    const preset = secretPresets.find((item) => item.name === presetName);
+    if (!preset) return;
+    setSecrets(preset.keys.map((name) => ({ name, value: "", visible: false })));
+  };
+
+  const exportSecretNames = () => {
+    const names = secrets.map((secret) => secret.name.trim()).filter(Boolean);
+    const blob = new Blob([JSON.stringify({ secretNames: names }, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "secret-names.json";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importSecretNames = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text()) as { secretNames?: unknown };
+      if (!Array.isArray(data.secretNames) || data.secretNames.some((name) => typeof name !== "string")) {
+        throw new Error("The file must contain a secretNames array.");
+      }
+      setSecrets(
+        data.secretNames.slice(0, 20).map((name) => ({
+          name,
+          value: "",
+          visible: false,
+        })),
+      );
+      setSelectedPreset("");
+    } catch {
+      setError("Unable to import secret names");
+    }
+  };
 
   useEffect(() => {
     if (selected) {
@@ -668,9 +724,10 @@ export default function App() {
                 />
                 <div className="secret-inputs">
                   <div className="secret-heading">
-                    <span className="secret-help">
-                      Use <code>$SECRET_NAME</code> to refer to a secret in your prompt.
-                    </span>
+                    <div>
+                      <strong className="secret-title">Run secrets</strong>
+                      <span className="secret-help">Use <code>$SECRET_NAME</code> in your prompt.</span>
+                    </div>
                     {secrets.length > 0 && (
                       <button
                         className="button button-ghost secret-clear"
@@ -683,6 +740,7 @@ export default function App() {
                   </div>
                   {secrets.map((secret, index) => (
                     <div className="secret-row" key={index}>
+                      <span className="secret-row-number" aria-hidden="true">{index + 1}</span>
                       <input
                         type="text"
                         value={secret.name}
@@ -694,7 +752,7 @@ export default function App() {
                             ),
                           );
                         }}
-                        placeholder="Secret name (e.g. API_KEY)"
+                        placeholder="SECRET_NAME"
                         autoComplete="off"
                         spellCheck={false}
                         aria-label={`Secret ${index + 1} name`}
@@ -716,10 +774,34 @@ export default function App() {
                         aria-label={`Secret ${index + 1} value`}
                       />
                       <button
+                        className="button button-ghost secret-order"
+                        type="button"
+                        disabled={index === 0}
+                        onClick={() => setSecrets((current) => {
+                          const next = [...current];
+                          [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                          return next;
+                        })}
+                        aria-label={`Move secret ${index + 1} up`}
+                      >↑</button>
+                      <button
+                        className="button button-ghost secret-order"
+                        type="button"
+                        disabled={index === secrets.length - 1}
+                        onClick={() => setSecrets((current) => {
+                          const next = [...current];
+                          [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                          return next;
+                        })}
+                        aria-label={`Move secret ${index + 1} down`}
+                      >↓</button>
+                      <button
                         className="button button-ghost secret-toggle"
                         type="button"
                         onClick={() =>
-                          setSecrets((current) =>
+                          (!secret.visible && !window.confirm("Show this secret value? It may be visible in your browser."))
+                            ? undefined
+                            : setSecrets((current) =>
                             current.map((item, itemIndex) =>
                               itemIndex === index
                                 ? { ...item, visible: !item.visible }
@@ -758,6 +840,28 @@ export default function App() {
                   >
                     {secrets.length >= 20 ? "Maximum of 20 secrets" : "+ Add secret"}
                   </button>
+                  <div className="secret-tools">
+                    <select
+                      value={selectedPreset}
+                      onChange={(event) => loadSecretPreset(event.target.value)}
+                      aria-label="Secret preset"
+                    >
+                      <option value="">Load preset…</option>
+                      {secretPresets.map((preset) => (
+                        <option key={preset.name} value={preset.name}>{preset.name}</option>
+                      ))}
+                    </select>
+                    <button className="button button-ghost secret-tool" type="button" onClick={exportSecretNames} disabled={secrets.length === 0}>
+                      Export names
+                    </button>
+                    <label className="button button-ghost secret-tool">
+                      Import names
+                      <input type="file" accept="application/json" onChange={importSecretNames} hidden />
+                    </label>
+                  </div>
+                  {secrets.length > 0 && (
+                    <span className="secret-attached">{secrets.length} secret{secrets.length === 1 ? "" : "s"} attached to next run</span>
+                  )}
                   {secretValidationError && (
                     <span className="secret-error">{secretValidationError}</span>
                   )}
