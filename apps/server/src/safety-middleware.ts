@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 
 const REDACTED_SECRET = "[REDACTED_SECRET]";
 const REDACTED_PII = "[REDACTED_PII]";
+const UUID_TOKEN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
 
 type FindingCategory =
   | "secret"
@@ -357,6 +358,20 @@ export class SafetyMiddleware {
           continue;
         }
 
+        // The loose phone matcher may identify the final numeric segment of
+        // a UUID as a phone number. UUIDs are application identifiers, not
+        // PII by themselves, so never partially redact one as a phone.
+        if (
+          pattern.id === "phone-number" &&
+          this.overlapsUuid(
+            prompt,
+            match.index,
+            match.index + match[0].length,
+          )
+        ) {
+          continue;
+        }
+
         findings.push({
           id: pattern.id,
           category: "pii",
@@ -369,6 +384,19 @@ export class SafetyMiddleware {
     }
 
     return findings;
+  }
+
+  private overlapsUuid(
+    prompt: string,
+    start: number,
+    end: number,
+  ): boolean {
+    for (const uuid of prompt.matchAll(UUID_TOKEN)) {
+      if (uuid.index === undefined) continue;
+      const uuidEnd = uuid.index + uuid[0].length;
+      if (start < uuidEnd && end > uuid.index) return true;
+    }
+    return false;
   }
 
   private detectPromptInjection(

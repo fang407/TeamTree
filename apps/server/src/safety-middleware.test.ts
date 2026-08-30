@@ -421,6 +421,19 @@ describe("SafetyMiddleware", () => {
   });
 
   describe("PII detection", () => {
+    it("does not mistake a UUID tail for a phone number", async () => {
+      const uuid = "550e8400-e29b-41d4-a716-446655440000";
+      const prompt = `API_KEY=${uuid}`;
+      const result = await new SafetyMiddleware().evaluate(prompt);
+
+      expect(result.wasRedacted).toBe(false);
+      expect(result.redactedPrompt).toBe(prompt);
+      expect(result.findings).not.toContainEqual(expect.objectContaining({
+        id: "phone-number",
+        category: "pii",
+      }));
+    });
+
     it("redacts email addresses by default", async () => {
       const email = [
         "alice",

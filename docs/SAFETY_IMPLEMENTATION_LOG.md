@@ -99,3 +99,17 @@ raw prompts, credentials, vault mappings, or CredData samples.
 
 - `npm run typecheck` completed successfully.
 - `npm run test` completed successfully: 7 test files and 105 tests passed.
+
+## 2026-08-30 - UUID / phone-number false-positive fix
+
+### Updated
+
+- `apps/server/src/safety-middleware.ts`
+- `apps/server/src/safety-middleware.test.ts`
+
+### Change
+
+- Excluded phone-number matches that overlap a complete UUID. This prevents a
+  numeric UUID suffix from being partially redacted as PII while preserving
+  normal phone-number detection outside UUIDs.
+- Added a regression test for a UUID used as an API-key-like identifier.
