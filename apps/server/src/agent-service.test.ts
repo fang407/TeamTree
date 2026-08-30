@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -573,4 +574,72 @@ describe("Agent lifecycle", () => {
       service.getSafetyEvents("missing-run"),
     ).toThrow("Run not found");
   });
+
+  it("does not store secrets in runs or messages", async () => {
+    const runner: AgentRunner = {
+      run: async () => ({
+        output: "done",
+        threadId: null,
+        usage: null,
+      }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Storage Redaction Test",
+    });
+
+    const secret = "sk-" + "a".repeat(24);
+
+    const prompt = `Use API key ${secret} for this request.`;
+
+    const { run } = await service.sendMessage(agent.id, prompt);
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("completed");
+
+    expect(service.getRun(run.id).prompt).not.toContain(secret);
+    expect(service.getMessages(agent.id)[0].content).not.toContain(secret);
+  });
+
+  it("redacts secrets from runner output before storing it", async () => {
+    const secret = "sk-" + "b".repeat(24);
+
+    const runner: AgentRunner = {
+      run: async () => ({
+        output: `The result contains ${secret}`,
+        threadId: null,
+        usage: null,
+      }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Output Redaction Test",
+    });
+
+    const { run } = await service.sendMessage(
+      agent.id,
+      "Return a normal result.",
+    );
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("completed");
+
+    const storedRun = service.getRun(run.id);
+    const messages = service.getMessages(agent.id);
+
+    expect(storedRun.output).not.toContain(secret);
+    expect(messages[1]?.content).not.toContain(secret);
+
+    expect(storedRun.output).toContain("[REDACTED_SECRET]");
+    expect(messages[1]?.content).toContain("[REDACTED_SECRET]");
+  });
+  
 });

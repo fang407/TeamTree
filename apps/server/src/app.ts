@@ -242,7 +242,18 @@ export async function createApp(
     { preValidation: validateRequest({ params: runIdParams }) },
     async (request) => {
       const { id } = runIdParams.parse(request.params);
-      return { events: service.getSafetyEvents(id) };
+
+      const events = service.getSafetyEvents(id).map((event) => ({
+        id: event.id,
+        runId: event.runId,
+        agentId: event.agentId,
+        boundary: event.boundary,
+        decision: event.decision,
+        reason: event.reason,
+        timestamp: event.timestamp,
+      }));
+      
+      return { events };
     },
   );
 

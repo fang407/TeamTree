@@ -27,6 +27,39 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
+  it("rejects an invalid bearer token", async () => {
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test", APP_AUTH_TOKEN: "a-strong-test-token" }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/agents",
+      headers: { authorization: "Bearer wrong-token" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "Authentication required" });
+    await app.close();
+  });
+
+  it("rejects a non-Bearer authorization header", async () => {
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test", APP_AUTH_TOKEN: "a-strong-test-token" }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/agents",
+      headers: { authorization: "Basic credentials" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
   it("preserves Fastify client error status codes", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
     const malformed = await app.inject({
@@ -168,6 +201,53 @@ describe("HTTP boundary", () => {
     });
 
     expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("does not expose raw prompt or secret fields in safety events", async () => {
+    const secret = "sk-" + "a".repeat(24);
+    const eventService = {
+      ...service,
+      getSafetyEvents: () => [
+        {
+          id: "event-id",
+          runId: "00000000-0000-0000-0000-000000000000",
+          boundary: "SERVICE",
+          decision: "REDACT",
+          reason: "Secret removed from trace",
+          timestamp: new Date().toISOString(),
+          prompt: `Use ${secret}`,
+          secret,
+        },
+      ],
+    } as unknown as AgentService;
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), eventService);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runs/00000000-0000-0000-0000-000000000000/safety-events",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain(secret);
+    expect(response.body).not.toContain("prompt");
+    expect(response.body).not.toContain("secret");
+    await app.close();
+  });
+
+  it("does not expose submitted secrets in validation errors", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const secret = "sk-" + "b".repeat(24);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { "content-type": "application/json" },
+      payload: { name: "", apiKey: secret },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).not.toContain(secret);
     await app.close();
   });
 
