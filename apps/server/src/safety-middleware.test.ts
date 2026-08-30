@@ -8,7 +8,7 @@ const defaultConfig: SafetyPolicyConfig = {
   redactionEnabled: true,
   promptSafetyEnabled: true,
   compliance: {
-    strictPii: false,
+    frameworks: [],
   },
   injection: {
     blockOn: ["critical", "high"],
@@ -407,7 +407,29 @@ describe("SafetyMiddleware", () => {
       );
     });
 
-    it("does not redact strict PII when strict mode is disabled", async () => {
+    it("does not redact framework-gated PII when frameworks are explicitly empty", async () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: {
+          frameworks: [],
+        },
+      });
+
+      const phone =
+        ["+65", "9123", "4567"].join(" ");
+
+      const result =
+        await middleware.evaluate(
+          `Call ${phone}.`,
+        );
+
+      expect(result.wasRedacted).toBe(false);
+    });
+
+    it("defaults to GDPR + CCPA when constructed with no config at all", async () => {
+      // The bare constructor (no args) uses DEFAULT_POLICY_CONFIG directly —
+      // this locks in that default rather than relying on defaultConfig
+      // above, which is a test fixture, not the shipped default.
       const phone =
         ["+65", "9123", "4567"].join(" ");
 
@@ -416,14 +438,20 @@ describe("SafetyMiddleware", () => {
           `Call ${phone}.`,
         );
 
-      expect(result.wasRedacted).toBe(false);
+      expect(result.wasRedacted).toBe(true);
+      expect(result.findings).toContainEqual(
+        expect.objectContaining({
+          id: "phone-number",
+          category: "pii",
+        }),
+      );
     });
 
-    it("strict PII redacts phone numbers", async () => {
+    it("HIPAA framework redacts phone numbers", async () => {
       const middleware = new SafetyMiddleware({
         ...defaultConfig,
         compliance: {
-          strictPii: true,
+          frameworks: ["HIPAA"],
         },
       });
 
@@ -446,11 +474,11 @@ describe("SafetyMiddleware", () => {
       );
     });
 
-    it("strict PII redacts US SSNs", async () => {
+    it("HIPAA framework redacts US SSNs", async () => {
       const middleware = new SafetyMiddleware({
         ...defaultConfig,
         compliance: {
-          strictPii: true,
+          frameworks: ["HIPAA"],
         },
       });
 
@@ -469,11 +497,11 @@ describe("SafetyMiddleware", () => {
       ).not.toContain(ssn);
     });
 
-    it("strict PII redacts Luhn-valid card numbers", async () => {
+    it("PCI_DSS framework redacts Luhn-valid card numbers", async () => {
       const middleware = new SafetyMiddleware({
         ...defaultConfig,
         compliance: {
-          strictPii: true,
+          frameworks: ["PCI_DSS"],
         },
       });
 
@@ -496,7 +524,7 @@ describe("SafetyMiddleware", () => {
       const middleware = new SafetyMiddleware({
         ...defaultConfig,
         compliance: {
-          strictPii: true,
+          frameworks: ["PCI_DSS"],
         },
       });
 
@@ -514,6 +542,91 @@ describe("SafetyMiddleware", () => {
             finding.id === "credit-card-number",
         ),
       ).toBe(false);
+    });
+
+    it("GDPR framework redacts IPv4 addresses but not SSNs", async () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: {
+          frameworks: ["GDPR"],
+        },
+      });
+
+      const ssn =
+        ["123", "45", "6789"].join("-");
+
+      const result =
+        await middleware.evaluate(
+          `Connect from 192.168.1.10, SSN: ${ssn}`,
+        );
+
+      // GDPR is tagged on ipv4-address but not on us-ssn — selecting one
+      // framework should not silently pull in another framework's rules.
+      expect(
+        result.findings.some(
+          (finding) => finding.id === "ipv4-address",
+        ),
+      ).toBe(true);
+
+      expect(
+        result.findings.some(
+          (finding) => finding.id === "us-ssn",
+        ),
+      ).toBe(false);
+
+      expect(result.redactedPrompt).not.toContain("192.168.1.10");
+      expect(result.redactedPrompt).toContain(ssn);
+    });
+
+    it("HIPAA framework redacts a keyword-gated date of birth", async () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: {
+          frameworks: ["HIPAA"],
+        },
+      });
+
+      const result =
+        await middleware.evaluate(
+          "Patient DOB: 04/12/1990, please update the chart.",
+        );
+
+      expect(result.wasRedacted).toBe(true);
+      expect(result.redactedPrompt).not.toContain("04/12/1990");
+
+      expect(result.findings).toContainEqual(
+        expect.objectContaining({
+          id: "date-of-birth",
+          category: "pii",
+        }),
+      );
+    });
+
+    it("multiple frameworks can be active at once", async () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: {
+          frameworks: ["HIPAA", "PCI_DSS"],
+        },
+      });
+
+      const ssn = ["123", "45", "6789"].join("-");
+      const card = ["4111", "1111", "1111", "1111"].join(" ");
+
+      const result =
+        await middleware.evaluate(
+          `SSN: ${ssn}, card: ${card}`,
+        );
+
+      expect(
+        result.findings.some((finding) => finding.id === "us-ssn"),
+      ).toBe(true);
+
+      expect(
+        result.findings.some(
+          (finding) => finding.id === "credit-card-number",
+        ),
+      ).toBe(true);
     });
   });
 
@@ -660,6 +773,30 @@ describe("SafetyMiddleware", () => {
       expect(
         JSON.stringify(result.findings),
       ).not.toContain(awsAccessKey);
+    });
+
+    it("fully redacts a secret even when a PII pattern matches a nested sub-span", async () => {
+      // Regression test: a Slack token's digits-only segment can also
+      // satisfy the phone-number PII pattern (10+ digits). The outer,
+      // more-specific secret match must win — a naive overlap resolution
+      // can otherwise let the smaller nested PII match claim the region
+      // first and leave the secret partially exposed (e.g.
+      // "xoxb-[REDACTED_PII]-abcdefghij" instead of one clean
+      // "[REDACTED_SECRET]").
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: { frameworks: ["GDPR", "CCPA"] },
+      });
+
+      const result = await middleware.evaluate(
+        `Credential: ${slackToken}`,
+      );
+
+      expect(result.redactedPrompt).not.toContain(slackToken);
+      expect(result.redactedPrompt).not.toMatch(/\d{10}/);
+      expect(result.redactedPrompt).toBe(
+        "Credential: [REDACTED_SECRET]",
+      );
     });
   });
 
