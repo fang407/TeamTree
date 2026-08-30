@@ -108,7 +108,7 @@ export function RedactionSettings() {
             aria-label="Redaction settings"
           >
             <div className="modal-panel-heading">
-              <strong>Redaction settings</strong>
+              <strong>Safety Filter settings</strong>
               <button
                 type="button"
                 className="modal-close"
@@ -135,7 +135,7 @@ export function RedactionSettings() {
                 <p className="redaction-settings-subhead">Compliance frameworks</p>
 
                 <p className="redaction-settings-note">
-                  This is a detection aid, not a compliance guarantee — actually complying also needs legal, contractual, and organizational
+                  This is a detection aid, not a compliance guarantee — actual complying also needs legal, contractual, and organizational
                   measures this tool can't provide on its own.
                 </p>
 
