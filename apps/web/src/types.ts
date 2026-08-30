@@ -55,7 +55,11 @@ export interface AgentRun {
     outputTokens?: number;
   } | null;
   stepCount: number | null;
-  toolCallCount: number | null;
+  toolCalls: {
+    commands: number;
+    fileEdits: number;
+    other: number;
+  } | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;

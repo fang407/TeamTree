@@ -9,6 +9,7 @@ import type {
   RunUsage,
   RunnerRequest,
   RunnerResult,
+  ToolCallBreakdown,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -30,7 +31,7 @@ interface ParsedEvents {
   usage: RunUsage | null;
   errors: string[];
   stepCount?: number;
-  toolCallCount?: number;
+  toolCalls?: ToolCallBreakdown;
 }
 
 export function containerName(agentId: string, instanceId = "default"): string {
@@ -203,7 +204,7 @@ export class ContainerCodexRunner implements AgentRunner {
       usage: null,
       errors: [],
       stepCount: 0,
-      toolCallCount: 0,
+      toolCalls: { commands: 0, fileEdits: 0, other: 0 },
     };
     let stdout = "";
     let stderr = "";
@@ -277,7 +278,7 @@ export class ContainerCodexRunner implements AgentRunner {
         threadId: parsed.threadId,
         usage: parsed.usage,
         stepCount: parsed.stepCount ?? 0,
-        toolCallCount: parsed.toolCallCount ?? 0,
+        toolCalls: parsed.toolCalls ?? { commands: 0, fileEdits: 0, other: 0 },
       };
     } finally {
       clearTimeout(timeout);

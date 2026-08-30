@@ -105,6 +105,26 @@ function formatDuration(
   return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
 }
 
+function formatToolCalls(toolCalls: AgentRun["toolCalls"]): string {
+  if (toolCalls == null) return "Not reported";
+
+  const total = toolCalls.commands + toolCalls.fileEdits + toolCalls.other;
+  if (total === 0) return "None — text only";
+
+  const parts: string[] = [];
+  if (toolCalls.commands > 0) {
+    parts.push(toolCalls.commands + (toolCalls.commands === 1 ? " command" : " commands"));
+  }
+  if (toolCalls.fileEdits > 0) {
+    parts.push(toolCalls.fileEdits + (toolCalls.fileEdits === 1 ? " file edit" : " file edits"));
+  }
+  if (toolCalls.other > 0) {
+    parts.push(toolCalls.other + " other");
+  }
+
+  return total + " (" + parts.join(", ") + ")";
+}
+
 function StatusPill({ status }: { status: Agent["status"] }) {
   return (
     <span className={"status status-" + status}>
@@ -1050,8 +1070,8 @@ export default function App() {
                   </div>
                   <div>
                     <dt>Tool calls</dt>
-                    <dd className={activeRun?.toolCallCount == null ? "run-detail-unavailable" : undefined}>
-                      {activeRun?.toolCallCount ?? "Not reported"}
+                    <dd className={activeRun?.toolCalls == null ? "run-detail-unavailable" : undefined}>
+                      {formatToolCalls(activeRun?.toolCalls ?? null)}
                     </dd>
                   </div>
                   <div>
