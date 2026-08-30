@@ -97,12 +97,19 @@ export const api = {
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
   runs: (id: string) =>
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
-  sendMessage: (id: string, content: string) =>
+  sendMessage: (
+    id: string,
+    content: string,
+    secrets: Record<string, string> = {},
+  ) =>
     request<{ run: AgentRun; message: Message }>(
       "/api/agents/" + id + "/messages",
       {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({
+          content,
+          ...(Object.keys(secrets).length > 0 ? { secrets } : {}),
+        }),
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),

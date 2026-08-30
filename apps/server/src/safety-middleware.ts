@@ -364,6 +364,17 @@ export class SafetyMiddleware {
     return findings;
   }
 
+  redactText(value: string): string {
+    const findings: Finding[] = [];
+
+    if (this.config.redactionEnabled) {
+      findings.push(...this.detectSecrets(value));
+      findings.push(...this.detectPii(value));
+    }
+
+    return this.redact(value, findings);
+  }
+
   private redact(
     prompt: string,
     findings: Finding[],
