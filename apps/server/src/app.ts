@@ -29,6 +29,24 @@ const updateAgentBody = createAgentBody
     (value) => Object.keys(value).length > 0,
     "At least one field is required",
   );
+const complianceFrameworkSchema = z.enum([
+  "GDPR",
+  "HIPAA",
+  "CCPA",
+  "PCI_DSS",
+]);
+const redactionConfigBody = z
+  .object({
+    redactionEnabled: z.boolean().optional(),
+    complianceFrameworks: z.array(complianceFrameworkSchema).optional(),
+    enabledPatternIds: z.array(z.string().min(1).max(100)).max(50).optional(),
+    disabledPatternIds: z.array(z.string().min(1).max(100)).max(50).optional(),
+  })
+  .strict()
+  .refine(
+    (value) => Object.keys(value).length > 0,
+    "At least one field is required",
+  );
 const reservedSecretNames = new Set([
   "PATH",
   "HOME",
@@ -161,6 +179,17 @@ export async function createApp(
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
 
   app.get("/api/system", async () => service.systemInfo());
+
+  app.get("/api/redaction-config", async () => service.getRedactionConfig());
+
+  app.patch(
+    "/api/redaction-config",
+    { preValidation: validateRequest({ body: redactionConfigBody }) },
+    async (request) => {
+      const body = redactionConfigBody.parse(request.body);
+      return service.updateRedactionConfig(body);
+    },
+  );
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 

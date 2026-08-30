@@ -9,6 +9,8 @@ const defaultConfig: SafetyPolicyConfig = {
   promptSafetyEnabled: true,
   compliance: {
     frameworks: [],
+    enabledPatternIds: [],
+    disabledPatternIds: [],
   },
   injection: {
     blockOn: ["critical", "high"],
@@ -412,6 +414,8 @@ describe("SafetyMiddleware", () => {
         ...defaultConfig,
         compliance: {
           frameworks: [],
+          enabledPatternIds: [],
+          disabledPatternIds: [],
         },
       });
 
@@ -452,6 +456,8 @@ describe("SafetyMiddleware", () => {
         ...defaultConfig,
         compliance: {
           frameworks: ["HIPAA"],
+          enabledPatternIds: [],
+          disabledPatternIds: [],
         },
       });
 
@@ -479,6 +485,8 @@ describe("SafetyMiddleware", () => {
         ...defaultConfig,
         compliance: {
           frameworks: ["HIPAA"],
+          enabledPatternIds: [],
+          disabledPatternIds: [],
         },
       });
 
@@ -502,6 +510,8 @@ describe("SafetyMiddleware", () => {
         ...defaultConfig,
         compliance: {
           frameworks: ["PCI_DSS"],
+          enabledPatternIds: [],
+          disabledPatternIds: [],
         },
       });
 
@@ -525,6 +535,8 @@ describe("SafetyMiddleware", () => {
         ...defaultConfig,
         compliance: {
           frameworks: ["PCI_DSS"],
+          enabledPatternIds: [],
+          disabledPatternIds: [],
         },
       });
 
@@ -549,6 +561,8 @@ describe("SafetyMiddleware", () => {
         ...defaultConfig,
         compliance: {
           frameworks: ["GDPR"],
+          enabledPatternIds: [],
+          disabledPatternIds: [],
         },
       });
 
@@ -583,6 +597,8 @@ describe("SafetyMiddleware", () => {
         ...defaultConfig,
         compliance: {
           frameworks: ["HIPAA"],
+          enabledPatternIds: [],
+          disabledPatternIds: [],
         },
       });
 
@@ -607,6 +623,8 @@ describe("SafetyMiddleware", () => {
         ...defaultConfig,
         compliance: {
           frameworks: ["HIPAA", "PCI_DSS"],
+          enabledPatternIds: [],
+          disabledPatternIds: [],
         },
       });
 
@@ -785,7 +803,7 @@ describe("SafetyMiddleware", () => {
       // "[REDACTED_SECRET]").
       const middleware = new SafetyMiddleware({
         ...defaultConfig,
-        compliance: { frameworks: ["GDPR", "CCPA"] },
+        compliance: { frameworks: ["GDPR", "CCPA"], enabledPatternIds: [], disabledPatternIds: [] },
       });
 
       const result = await middleware.evaluate(
@@ -801,6 +819,152 @@ describe("SafetyMiddleware", () => {
   });
 
   describe("configuration", () => {
+    it("getConfig returns a copy, not a live reference", () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: { frameworks: ["GDPR"], enabledPatternIds: [], disabledPatternIds: [] },
+      });
+
+      const snapshot = middleware.getConfig();
+      snapshot.compliance.frameworks.push("HIPAA");
+
+      // Mutating the returned snapshot must not affect the middleware's
+      // actual live config.
+      expect(middleware.getConfig().compliance.frameworks).toEqual(["GDPR"]);
+    });
+
+    it("updateRedactionRules changes behavior on subsequent evaluate calls", async () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: { frameworks: [], enabledPatternIds: [], disabledPatternIds: [] },
+      });
+
+      const ssn = ["123", "45", "6789"].join("-");
+
+      const before = await middleware.evaluate(`SSN: ${ssn}`);
+      expect(before.wasRedacted).toBe(false);
+
+      middleware.updateRedactionRules({ complianceFrameworks: ["HIPAA"] });
+
+      const after = await middleware.evaluate(`SSN: ${ssn}`);
+      expect(after.wasRedacted).toBe(true);
+      expect(after.redactedPrompt).not.toContain(ssn);
+    });
+
+    it("updateRedactionRules can turn redaction off entirely", async () => {
+      const middleware = new SafetyMiddleware({ ...defaultConfig });
+
+      middleware.updateRedactionRules({ redactionEnabled: false });
+
+      const result = await middleware.evaluate(`Use ${awsAccessKey}.`);
+      expect(result.wasRedacted).toBe(false);
+    });
+
+    it("updateRedactionRules leaves an omitted field unchanged", () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        redactionEnabled: false,
+        compliance: { frameworks: ["GDPR"], enabledPatternIds: [], disabledPatternIds: [] },
+      });
+
+      middleware.updateRedactionRules({ complianceFrameworks: ["CCPA"] });
+
+      const config = middleware.getConfig();
+      expect(config.redactionEnabled).toBe(false);
+      expect(config.compliance.frameworks).toEqual(["CCPA"]);
+    });
+
+    it("disabledPatternIds excludes a pattern even though its framework is enabled", async () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: {
+          frameworks: ["HIPAA"],
+          enabledPatternIds: [],
+          disabledPatternIds: ["us-ssn"],
+        },
+      });
+
+      const ssn = ["123", "45", "6789"].join("-");
+      const result = await middleware.evaluate(`SSN: ${ssn}`);
+
+      expect(result.wasRedacted).toBe(false);
+      expect(
+        result.findings.some((finding) => finding.id === "us-ssn"),
+      ).toBe(false);
+    });
+
+    it("enabledPatternIds turns on a single pattern without its framework", async () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: {
+          frameworks: [],
+          enabledPatternIds: ["us-ssn"],
+          disabledPatternIds: [],
+        },
+      });
+
+      const ssn = ["123", "45", "6789"].join("-");
+      const result = await middleware.evaluate(`SSN: ${ssn}`);
+
+      expect(result.wasRedacted).toBe(true);
+      expect(result.redactedPrompt).not.toContain(ssn);
+
+      // Enabling one pattern individually must not pull in the rest of
+      // HIPAA's bundle (e.g. phone-number is also HIPAA-tagged).
+      const phone = ["+65", "9123", "4567"].join(" ");
+      const phoneResult = await middleware.evaluate(`Call ${phone}`);
+      expect(phoneResult.wasRedacted).toBe(false);
+    });
+
+    it("disabledPatternIds wins over enabledPatternIds for the same pattern id", async () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: {
+          frameworks: [],
+          enabledPatternIds: ["us-ssn"],
+          disabledPatternIds: ["us-ssn"],
+        },
+      });
+
+      const ssn = ["123", "45", "6789"].join("-");
+      const result = await middleware.evaluate(`SSN: ${ssn}`);
+      expect(result.wasRedacted).toBe(false);
+    });
+
+    it("disabledPatternIds can turn off a baseline pattern (email)", async () => {
+      const middleware = new SafetyMiddleware({
+        ...defaultConfig,
+        compliance: {
+          frameworks: [],
+          enabledPatternIds: [],
+          disabledPatternIds: ["email-address"],
+        },
+      });
+
+      const result = await middleware.evaluate("Contact me at jane@example.com");
+      expect(result.wasRedacted).toBe(false);
+    });
+
+    it("listPiiPatterns returns id/description/severity/frameworks for every pattern", () => {
+      const middleware = new SafetyMiddleware();
+      const patterns = middleware.listPiiPatterns();
+
+      expect(patterns.length).toBeGreaterThan(0);
+      expect(patterns).toContainEqual(
+        expect.objectContaining({ id: "email-address", frameworks: [] }),
+      );
+      expect(patterns).toContainEqual(
+        expect.objectContaining({ id: "us-ssn", frameworks: ["HIPAA", "CCPA"] }),
+      );
+
+      // Must not leak the regex or validate function — only serializable
+      // catalog metadata.
+      for (const pattern of patterns) {
+        expect(pattern).not.toHaveProperty("regex");
+        expect(pattern).not.toHaveProperty("validate");
+      }
+    });
+
     it("can disable redaction", async () => {
       const middleware = new SafetyMiddleware({
         ...defaultConfig,
