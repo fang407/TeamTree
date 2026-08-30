@@ -47,6 +47,53 @@ export async function createApp(
     bodyLimit: 1_048_576,
   });
 
+  app.setErrorHandler((error, request, reply) => {
+    const issues = (error as { issues?: unknown }).issues;
+    if (Array.isArray(issues)) {
+      return reply.code(400).send({
+        error: "Request validation failed",
+        details: issues.map((issue) => ({
+          field:
+            issue && typeof issue === "object" && "path" in issue
+              ? (issue as { path?: unknown[] }).path?.join(".") || "request"
+              : "request",
+          message:
+            issue && typeof issue === "object" && "message" in issue
+              ? String((issue as { message: unknown }).message)
+              : "Invalid request",
+        })),
+      });
+    }
+
+    const appError = error instanceof Error ? error : new Error(String(error));
+
+    const frameworkStatus =
+      typeof (error as { statusCode?: unknown }).statusCode === "number"
+        ? (error as { statusCode: number }).statusCode
+        : null;
+
+    const statusCode =
+      error instanceof HttpError
+        ? error.statusCode
+        : frameworkStatus &&
+            frameworkStatus >= 400 &&
+            frameworkStatus <= 599
+          ? frameworkStatus
+          : 500;
+
+    if (statusCode >= 500) {
+      request.log.error({ err: appError }, "Unhandled server error");
+
+      return reply.code(500).send({
+        error: "Internal server error",
+      });
+    }
+
+    return reply.code(statusCode).send({
+      error: appError.message,
+    });
+  });
+
   await app.register(cors, {
     origin:
       config.nodeEnv === "development"
@@ -190,6 +237,15 @@ export async function createApp(
     }
   );
 
+  app.get(
+    "/api/runs/:id/safety-events",
+    { preValidation: validateRequest({ params: runIdParams }) },
+    async (request) => {
+      const { id } = runIdParams.parse(request.params);
+      return { events: service.getSafetyEvents(id) };
+    },
+  );
+
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {
@@ -203,30 +259,6 @@ export async function createApp(
       return reply.sendFile("index.html");
     });
   }
-
-  app.setErrorHandler((error, request, reply) => {
-    const appError = error instanceof Error ? error : new Error(String(error));
-    const validationError = error instanceof z.ZodError;
-    const frameworkStatus =
-      typeof (error as { statusCode?: unknown }).statusCode === "number"
-        ? (error as { statusCode: number }).statusCode
-        : null;
-    const statusCode =
-      error instanceof HttpError
-        ? error.statusCode
-        : validationError
-          ? 400
-          : frameworkStatus && frameworkStatus >= 400 && frameworkStatus <= 599
-            ? frameworkStatus
-            : 500;
-    if (statusCode >= 500) {
-      request.log.error(appError);
-    }
-    return reply.code(statusCode).send({
-      error: appError.message,
-      ...(validationError ? { details: error.issues } : {}),
-    });
-  });
 
   return app;
 }

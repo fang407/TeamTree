@@ -6,6 +6,7 @@ import type { AgentService } from "./agent-service.js";
 const service = {
   listAgents: () => [],
   systemInfo: async () => ({}),
+  getSafetyEvents: () => [],
 } as unknown as AgentService;
 
 describe("HTTP boundary", () => {
@@ -57,6 +58,18 @@ describe("HTTP boundary", () => {
     expect(response.statusCode).toBe(400);
     await app.close();
   });
+
+  it("rejects a missing agent UUID", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/agents/",
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  })
 
   it("rejects an empty agent name", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
@@ -111,4 +124,51 @@ describe("HTTP boundary", () => {
     expect(response.statusCode).toBe(400);
     await app.close();
   });
+
+  it("retrieves safety events for a valid run ID", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runs/00000000-0000-0000-0000-000000000000/safety-events",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      events: [],
+    });
+
+    await app.close();
+  });
+
+  it("rejects an invalid safety-event run ID", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runs/not-a-uuid/safety-events",
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("protects safety events with authentication", async () => {
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "test",
+        APP_AUTH_TOKEN: "a-strong-test-token",
+      }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runs/00000000-0000-0000-0000-000000000000/safety-events",
+    });
+
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
 });
