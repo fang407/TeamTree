@@ -113,3 +113,25 @@ raw prompts, credentials, vault mappings, or CredData samples.
   numeric UUID suffix from being partially redacted as PII while preserving
   normal phone-number detection outside UUIDs.
 - Added a regression test for a UUID used as an API-key-like identifier.
+
+## 2026-08-30 - Run-value classification UI
+
+### Updated
+
+- `apps/web/src/App.tsx`
+- `apps/web/src/styles.css`
+
+### Change
+
+- Reframed the secret panel as `Run values`, with an explicit `Secret` or
+  `Non-secret` classification per temporary environment variable.
+- Both kinds continue to use the existing protected runtime-value API path;
+  classification never bypasses middleware or inserts raw values into the
+  prompt, trace, or event timeline.
+- Added export/import of value names and classifications, while accepting the
+  previous names-only manifest for compatibility.
+
+### Verification
+
+- `npm run typecheck` completed successfully.
+- `npm run build -w @launchpad/web` completed successfully.
