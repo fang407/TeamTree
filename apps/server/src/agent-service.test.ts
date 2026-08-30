@@ -55,6 +55,7 @@ afterEach(async () => {
 
 async function makeService(
   runner: AgentRunner = new FakeRunner(),
+  environment: NodeJS.ProcessEnv = {},
 ): Promise<AgentService> {
   const root = await mkdtemp(
     path.join(tmpdir(), "launchpad-test-"),
@@ -72,6 +73,7 @@ async function makeService(
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    ...environment,
   });
 
   const service = new AgentService(
@@ -640,6 +642,91 @@ describe("Agent lifecycle", () => {
 
     expect(storedRun.output).toContain("[REDACTED_SECRET]");
     expect(messages[1]?.content).toContain("[REDACTED_SECRET]");
+  });
+
+  it("forwards transient secrets and clears them after a successful run", async () => {
+    let receivedSecrets: Record<string, string> | undefined;
+    const runner: AgentRunner = {
+      run: async (request) => {
+        receivedSecrets = request.secrets;
+        return { output: "done", threadId: null, usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Secret Forwarding" });
+    const secrets = { AWS_KEY: "fake-aws-value", NPM_TOKEN: "fake-npm-value" };
+
+    const { run } = await service.sendMessage(agent.id, "Check credentials", secrets);
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(receivedSecrets).toEqual({});
+  });
+
+  it("uses partial redaction only when explicitly enabled", async () => {
+    const secret = "abc123456xyz";
+    const runner: AgentRunner = {
+      run: async () => ({ output: `Value: ${secret}`, threadId: null, usage: null }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+
+    const developmentService = await makeService(runner, {
+      NODE_ENV: "development",
+      ALLOW_PARTIAL_SECRET_REDACTION: "true",
+    });
+    const agent = await developmentService.createAgent({ name: "Partial Redaction" });
+    const { run } = await developmentService.sendMessage(
+      agent.id,
+      "Return the value",
+      { AWS_KEY: secret },
+    );
+    await expect.poll(() => developmentService.getRun(run.id).status).toBe("completed");
+
+    expect(developmentService.getRun(run.id).output).toContain(
+      "[PARTIAL_SECRET:abc…xyz]",
+    );
+    expect(developmentService.getRun(run.id).output).not.toContain(secret);
+  });
+
+  it("fully redacts secrets when partial redaction is disabled", async () => {
+    const secret = "abc123456xyz";
+    const runner: AgentRunner = {
+      run: async () => ({ output: `Value: ${secret}`, threadId: null, usage: null }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Full Redaction" });
+    const { run } = await service.sendMessage(agent.id, "Return the value", {
+      AWS_KEY: secret,
+    });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(service.getRun(run.id).output).toContain("[REDACTED_SECRET]");
+    expect(service.getRun(run.id).output).not.toContain(secret);
+  });
+
+  it("redacts secrets from runner failures", async () => {
+    const secret = "fake-failure-secret-123";
+    const runner: AgentRunner = {
+      run: async () => {
+        throw new Error(`Command failed while using ${secret}`);
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Failure Redaction" });
+    const { run } = await service.sendMessage(agent.id, "Run the command", {
+      AWS_KEY: secret,
+    });
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+
+    const storedRun = service.getRun(run.id);
+    expect(storedRun.error).not.toContain(secret);
+    expect(storedRun.error).toContain("[REDACTED_SECRET]");
   });
   
 });

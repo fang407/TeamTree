@@ -144,6 +144,76 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
+  it("accepts valid secret names and forwards them separately", async () => {
+    let receivedSecrets: Record<string, string> | undefined;
+    const messageService = {
+      ...service,
+      sendMessage: async (_id: string, _content: string, secrets: Record<string, string>) => {
+        receivedSecrets = secrets;
+        return { run: {}, message: {} };
+      },
+    } as unknown as AgentService;
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), messageService);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000/messages",
+      headers: { "content-type": "application/json" },
+      payload: {
+        content: "Use the credentials",
+        secrets: { AWS_KEY: "fake-value", NPM_TOKEN: "another-value" },
+      },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(receivedSecrets).toEqual({
+      AWS_KEY: "fake-value",
+      NPM_TOKEN: "another-value",
+    });
+    await app.close();
+  });
+
+  it("rejects invalid and reserved secret names", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    for (const name of ["aws-key", "PATH", "ARK_API_KEY"]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agents/00000000-0000-0000-0000-000000000000/messages",
+        headers: { "content-type": "application/json" },
+        payload: { content: "test", secrets: { [name]: "value" } },
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    await app.close();
+  });
+
+  it("rejects more than 20 secrets", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const secrets = Object.fromEntries(
+      Array.from({ length: 21 }, (_, index) => [`SECRET_${index}`, "value"]),
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000/messages",
+      headers: { "content-type": "application/json" },
+      payload: { content: "test", secrets },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects secret values larger than 8 KB", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000/messages",
+      headers: { "content-type": "application/json" },
+      payload: { content: "test", secrets: { AWS_KEY: "x".repeat(8_193) } },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
   it("rejects unknown request fields", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
 

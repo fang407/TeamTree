@@ -943,9 +943,38 @@ textarea:focus {
   margin: 4px 0 11px;
 }
 
+.secret-help {
+  color: #999992;
+  font-size: 10px;
+}
+
+.secret-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.secret-clear {
+  min-height: 26px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.secret-error {
+  color: #ae4646;
+  font-size: 10px;
+}
+
+.secret-help code {
+  color: #6350c5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
 .secret-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1.3fr) auto;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1.3fr) auto auto;
   gap: 7px;
   align-items: center;
 }
@@ -983,6 +1012,12 @@ textarea:focus {
   padding: 0;
   font-size: 16px;
   line-height: 1;
+}
+
+.secret-toggle {
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 10px;
 }
 
 .composer-footer {

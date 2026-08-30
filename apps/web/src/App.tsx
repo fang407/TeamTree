@@ -21,7 +21,10 @@ const emptyForm = {
 type SecretEntry = {
   name: string;
   value: string;
+  visible: boolean;
 };
+
+const secretNamePattern = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -85,6 +88,22 @@ export default function App() {
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
   );
+
+  const secretValidationError = useMemo(() => {
+    const names = new Set<string>();
+    for (const secret of secrets) {
+      const name = secret.name.trim();
+      if (!name || !secret.value) {
+        return "Complete both the secret name and value, or remove the row.";
+      }
+      if (!secretNamePattern.test(name)) {
+        return "Secret names must start with an uppercase letter and use only A–Z, 0–9, and underscores.";
+      }
+      if (names.has(name)) return `The secret name ${name} is duplicated.`;
+      names.add(name);
+    }
+    return null;
+  }, [secrets]);
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -279,7 +298,10 @@ export default function App() {
 
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!selected || !prompt.trim()) return;
+    if (!selected || !prompt.trim() || secretValidationError) {
+      if (secretValidationError) setError(secretValidationError);
+      return;
+    }
     const content = prompt.trim();
     const secretMap = Object.fromEntries(
       secrets
@@ -645,6 +667,20 @@ export default function App() {
                   rows={3}
                 />
                 <div className="secret-inputs">
+                  <div className="secret-heading">
+                    <span className="secret-help">
+                      Use <code>$SECRET_NAME</code> to refer to a secret in your prompt.
+                    </span>
+                    {secrets.length > 0 && (
+                      <button
+                        className="button button-ghost secret-clear"
+                        type="button"
+                        onClick={() => setSecrets([])}
+                      >
+                        Clear all
+                      </button>
+                    )}
+                  </div>
                   {secrets.map((secret, index) => (
                     <div className="secret-row" key={index}>
                       <input
@@ -664,7 +700,7 @@ export default function App() {
                         aria-label={`Secret ${index + 1} name`}
                       />
                       <input
-                        type="password"
+                        type={secret.visible ? "text" : "password"}
                         value={secret.value}
                         onChange={(event) => {
                           const value = event.target.value;
@@ -679,6 +715,22 @@ export default function App() {
                         spellCheck={false}
                         aria-label={`Secret ${index + 1} value`}
                       />
+                      <button
+                        className="button button-ghost secret-toggle"
+                        type="button"
+                        onClick={() =>
+                          setSecrets((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, visible: !item.visible }
+                                : item,
+                            ),
+                          )
+                        }
+                        aria-label={secret.visible ? "Hide secret value" : "Show secret value"}
+                      >
+                        {secret.visible ? "Hide" : "Show"}
+                      </button>
                       <button
                         className="button button-ghost secret-remove"
                         type="button"
@@ -696,10 +748,19 @@ export default function App() {
                   <button
                     className="button button-ghost secret-add"
                     type="button"
-                    onClick={() => setSecrets((current) => [...current, { name: "", value: "" }])}
+                    onClick={() =>
+                      setSecrets((current) => [
+                        ...current,
+                        { name: "", value: "", visible: false },
+                      ])
+                    }
+                    disabled={secrets.length >= 20}
                   >
-                    + Add secret
+                    {secrets.length >= 20 ? "Maximum of 20 secrets" : "+ Add secret"}
                   </button>
+                  {secretValidationError && (
+                    <span className="secret-error">{secretValidationError}</span>
+                  )}
                 </div>
                 <div className="composer-footer">
                   <span>
@@ -709,6 +770,7 @@ export default function App() {
                     className="send-button"
                     disabled={
                       !prompt.trim() ||
+                      Boolean(secretValidationError) ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
                       (activeRun != null && ["queued", "running"].includes(activeRun.status))

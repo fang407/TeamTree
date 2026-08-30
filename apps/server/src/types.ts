@@ -102,6 +102,7 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  secrets?: Record<string, string>;
   onSafetyEvent?: (event: RunnerSafetyEvent) => Promise<void>;
 }
 

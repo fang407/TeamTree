@@ -17,6 +17,26 @@ import { SafetyMiddleware, type SafetyCheckResult  } from "./safety-middleware.j
 
 const now = () => new Date().toISOString();
 
+function redactSecrets(
+  text: string,
+  secrets: Record<string, string>,
+  allowPartial: boolean,
+): string {
+  return Object.values(secrets).reduce(
+    (redacted, secret) => {
+      if (!secret) return redacted;
+
+      const replacement =
+        allowPartial && secret.length > 6
+          ? `[PARTIAL_SECRET:${secret.slice(0, 3)}…${secret.slice(-3)}]`
+          : "[REDACTED_SECRET]";
+
+      return redacted.split(secret).join(replacement);
+    },
+    text,
+  );
+}
+
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
@@ -165,6 +185,7 @@ export class AgentService {
   async sendMessage(
     agentId: string,
     prompt: string,
+    secrets: Record<string, string> = {},
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
@@ -217,7 +238,13 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
-    const execution = this.executeRun(agentAtStart, run, prompt, safetyResult);
+    const execution = this.executeRun(
+      agentAtStart,
+      run,
+      prompt,
+      safetyResult,
+      secrets,
+    );
     this.activeExecutions.set(agentId, execution);
     void execution
       .finally(() => {
@@ -253,6 +280,7 @@ export class AgentService {
     run: AgentRun,
     originalPrompt: string,
     safetyResult: SafetyCheckResult,
+    secrets: Record<string, string>,
   ): Promise<void> {
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
@@ -327,6 +355,7 @@ export class AgentService {
         workspacePath: agentAtStart.workspacePath,
         prompt: originalPrompt,
         threadId: agentAtStart.codexThreadId,
+        secrets,
         onSafetyEvent: (event) =>
           this.recordSafetyEvent({
             runId: run.id,
@@ -339,7 +368,11 @@ export class AgentService {
 
       const completedAt = now();
 
-      const safeOutput = this.safetyMiddleware.redactText(result.output);
+      const safeOutput = redactSecrets(
+        this.safetyMiddleware.redactText(result.output),
+        secrets,
+        this.config.allowPartialSecretRedaction,
+      );
 
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
@@ -375,7 +408,11 @@ export class AgentService {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
-      const safeMessage = this.safetyMiddleware.redactText(message);
+      const safeMessage = redactSecrets(
+        this.safetyMiddleware.redactText(message),
+        secrets,
+        this.config.allowPartialSecretRedaction,
+      );
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -400,6 +437,10 @@ export class AgentService {
         decision: cancelled ? "CANCELLED" : "ALLOW",
         reason: cancelled ? "Run cancelled" : "Run failed",
       });
+    } finally {
+      for (const key of Object.keys(secrets)) {
+        delete secrets[key];
+      }
     }
   }
 
