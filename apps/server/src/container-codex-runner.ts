@@ -172,7 +172,12 @@ export class ContainerCodexRunner implements AgentRunner {
       emitSafetyEvent: (event: RunnerSafetyEvent) => this.emitSafetyEvent(request, event),
     };
     this.active.set(request.agentId, active);
-    await active.emitSafetyEvent({ decision: "ALLOW", reason: "Execution started" });
+
+    // See codex-runner.ts: intentionally no "Execution started" safety
+    // event here — spawning the container isn't a safety decision, just an
+    // unconditional lifecycle step, so it added no-information noise to
+    // the audit timeline. Real decisions (BLOCK on output-limit, CANCELLED
+    // on timeout/user-stop) are still emitted below where they occur.
 
     const parsed: ParsedEvents = {
       messages: [],

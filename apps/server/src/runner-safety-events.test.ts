@@ -46,7 +46,7 @@ function localConfig(codexBin: string, overrides: Record<string, string> = {}) {
 }
 
 describe("Runner safety events", () => {
-  it("records a local execution start and successful result", async () => {
+  it("records a successful local run with no safety events", async () => {
     const executable = await fakeExecutable(`
       console.log(JSON.stringify({ type: "thread.started", thread_id: "thread-test" }));
       console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Done" } }));
@@ -55,7 +55,9 @@ describe("Runner safety events", () => {
     const runner = new CodexRunner(localConfig(executable));
 
     await expect(runner.run(request(events))).resolves.toMatchObject({ output: "Done" });
-    expect(events).toEqual([{ decision: "ALLOW", reason: "Execution started" }]);
+    // Spawning the process is a lifecycle step, not a safety decision, so a
+    // clean run should produce no safety events at all.
+    expect(events).toEqual([]);
   });
 
   it("records timeout cancellation", async () => {
@@ -97,7 +99,7 @@ describe("Runner safety events", () => {
     );
   });
 
-  it("records execution start through the container Runner path", async () => {
+  it("records a successful container run with no safety events", async () => {
     const engine = await fakeExecutable(`
       if (process.argv[2] === "run") {
         console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Container done" } }));
@@ -113,6 +115,6 @@ describe("Runner safety events", () => {
     );
 
     await expect(runner.run(request(events))).resolves.toMatchObject({ output: "Container done" });
-    expect(events).toEqual([{ decision: "ALLOW", reason: "Execution started" }]);
+    expect(events).toEqual([]);
   });
 });
