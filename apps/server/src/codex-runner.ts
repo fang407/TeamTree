@@ -154,7 +154,13 @@ export class CodexRunner implements AgentRunner {
       emitSafetyEvent: (event: RunnerSafetyEvent) => this.emitSafetyEvent(request, event),
     };
     this.active.set(request.agentId, active);
-    await active.emitSafetyEvent({ decision: "ALLOW", reason: "Execution started" });
+
+    // Note: we deliberately don't emit an "Execution started" safety event
+    // here. Spawning the process is not a safety decision — it's an
+    // unconditional lifecycle step with no branch behind it — so treating
+    // it as an ALLOW event just added a no-information entry to the audit
+    // timeline. Real decisions (BLOCK on output-limit, CANCELLED on
+    // timeout/user-stop) are still emitted below where they occur.
 
     const parsed: ParsedEvents = {
       messages: [],
