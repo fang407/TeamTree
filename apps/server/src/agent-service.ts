@@ -13,9 +13,29 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
-import { SafetyMiddleware } from "./safety-middleware.js";
+import { SafetyMiddleware, type SafetyCheckResult  } from "./safety-middleware.js";
 
 const now = () => new Date().toISOString();
+
+function redactSecrets(
+  text: string,
+  secrets: Record<string, string>,
+  allowPartial: boolean,
+): string {
+  return Object.values(secrets).reduce(
+    (redacted, secret) => {
+      if (!secret) return redacted;
+
+      const replacement =
+        allowPartial && secret.length > 6
+          ? `[PARTIAL_SECRET:${secret.slice(0, 3)}…${secret.slice(-3)}]`
+          : "[REDACTED_SECRET]";
+
+      return redacted.split(secret).join(replacement);
+    },
+    text,
+  );
+}
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -165,6 +185,7 @@ export class AgentService {
   async sendMessage(
     agentId: string,
     prompt: string,
+    secrets: Record<string, string> = {},
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
@@ -174,11 +195,15 @@ export class AgentService {
     }
     const timestamp = now();
     const runId = randomUUID();
+
+    const safetyResult = await this.safetyMiddleware.evaluate(prompt);
+    const storedPrompt = safetyResult.redactedPrompt;
+
     const run: AgentRun = {
       id: runId,
       agentId,
       status: "queued",
-      prompt,
+      prompt: storedPrompt,
       output: null,
       error: null,
       usage: null,
@@ -191,7 +216,7 @@ export class AgentService {
       agentId,
       runId,
       role: "user",
-      content: prompt,
+      content: storedPrompt,
       createdAt: timestamp,
     };
     const agentAtStart = await this.store.mutate((database) => {
@@ -213,7 +238,13 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
-    const execution = this.executeRun(agentAtStart, run);
+    const execution = this.executeRun(
+      agentAtStart,
+      run,
+      prompt,
+      safetyResult,
+      secrets,
+    );
     this.activeExecutions.set(agentId, execution);
     void execution
       .finally(() => {
@@ -244,7 +275,13 @@ export class AgentService {
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+  private async executeRun(
+    agentAtStart: Agent, 
+    run: AgentRun,
+    originalPrompt: string,
+    safetyResult: SafetyCheckResult,
+    secrets: Record<string, string>,
+  ): Promise<void> {
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
         if (storedRun) {
@@ -257,8 +294,6 @@ export class AgentService {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
-
-      const safetyResult = await this.safetyMiddleware.evaluate(run.prompt);
 
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
@@ -318,8 +353,9 @@ export class AgentService {
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
+        prompt: originalPrompt,
         threadId: agentAtStart.codexThreadId,
+        secrets,
         onSafetyEvent: (event) =>
           this.recordSafetyEvent({
             runId: run.id,
@@ -331,13 +367,20 @@ export class AgentService {
       });
 
       const completedAt = now();
+
+      const safeOutput = redactSecrets(
+        this.safetyMiddleware.redactText(result.output),
+        secrets,
+        this.config.allowPartialSecretRedaction,
+      );
+
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
 
         storedRun.status = "completed";
-        storedRun.output = result.output;
+        storedRun.output = safeOutput;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
         database.messages.push({
@@ -345,7 +388,7 @@ export class AgentService {
           agentId: agent.id,
           runId: run.id,
           role: "assistant",
-          content: result.output,
+          content: safeOutput,
           createdAt: completedAt,
         });
         agent.status = "ready";
@@ -365,19 +408,24 @@ export class AgentService {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
+      const safeMessage = redactSecrets(
+        this.safetyMiddleware.redactText(message),
+        secrets,
+        this.config.allowPartialSecretRedaction,
+      );
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (storedRun) {
           storedRun.status = cancelled ? "cancelled" : "failed";
-          storedRun.error = message;
+          storedRun.error = safeMessage;
           storedRun.completedAt = completedAt;
         }
         if (agent) {
           if (agent.status !== "stopped") {
             agent.status = cancelled ? "ready" : "error";
           }
-          agent.lastError = cancelled ? null : message;
+          agent.lastError = cancelled ? null : safeMessage;
           agent.updatedAt = completedAt;
         }
       });
@@ -389,6 +437,10 @@ export class AgentService {
         decision: cancelled ? "CANCELLED" : "ALLOW",
         reason: cancelled ? "Run cancelled" : "Run failed",
       });
+    } finally {
+      for (const key of Object.keys(secrets)) {
+        delete secrets[key];
+      }
     }
   }
 

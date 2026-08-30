@@ -72,6 +72,22 @@ export function buildContainerRunArgs(
     config.containerUser,
     "--env",
     "ARK_API_KEY",
+    ...Object.keys(request.secrets ?? {})
+      .filter(
+        (name) =>
+          !new Set([
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "CODEX_HOME",
+            "ARK_API_KEY",
+            "NO_COLOR",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+          ]).has(name),
+      )
+      .flatMap((name) => ["--env", name]),
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",
@@ -153,7 +169,7 @@ export class ContainerCodexRunner implements AgentRunner {
       buildContainerRunArgs(request, this.config),
       {
         cwd: request.workspacePath,
-        env: this.childEnvironment(),
+        env: this.childEnvironment(request.secrets),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -259,7 +275,9 @@ export class ContainerCodexRunner implements AgentRunner {
     }
   }
 
-  private childEnvironment(): NodeJS.ProcessEnv {
+  private childEnvironment(
+    secrets: Record<string, string> = {},
+  ): NodeJS.ProcessEnv {
     const environment: NodeJS.ProcessEnv = {
       ARK_API_KEY: this.config.arkApiKey,
       NO_COLOR: "1",
@@ -273,6 +291,20 @@ export class ContainerCodexRunner implements AgentRunner {
       "XDG_RUNTIME_DIR",
     ] as const) {
       if (process.env[name] !== undefined) environment[name] = process.env[name];
+    }
+    const reservedNames = new Set([
+      "PATH",
+      "HOME",
+      "TMPDIR",
+      "CODEX_HOME",
+      "ARK_API_KEY",
+      "NO_COLOR",
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "NO_PROXY",
+    ]);
+    for (const [name, value] of Object.entries(secrets)) {
+      if (!reservedNames.has(name)) environment[name] = value;
     }
     return environment;
   }

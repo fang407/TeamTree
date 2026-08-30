@@ -60,4 +60,24 @@ describe("Container Codex runner", () => {
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
     expect(args).not.toContain("keep-id");
   });
+
+  it("passes secret names without exposing secret values in arguments", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CONTAINER_ENGINE: "docker",
+      CONTAINER_RUNTIME_IMAGE: "runtime:test",
+    });
+    const args = buildContainerRunArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "check the environment",
+        threadId: null,
+        secrets: { AWS_KEY: "fake-secret-value" },
+      },
+      config,
+    );
+    expect(args).toContain("AWS_KEY");
+    expect(args).not.toContain("fake-secret-value");
+  });
 });

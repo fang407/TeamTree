@@ -28,10 +28,41 @@ const updateAgentBody = createAgentBody
   .refine(
     (value) => Object.keys(value).length > 0,
     "At least one field is required",
-);
+  );
+const reservedSecretNames = new Set([
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "CODEX_HOME",
+  "ARK_API_KEY",
+  "NO_COLOR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+]);
 const messageBody = z
   .object({
     content: z.string().trim().min(1).max(50_000),
+    secrets: z
+      .record(
+        z
+          .string()
+          .regex(
+            /^[A-Z][A-Z0-9_]{0,63}$/,
+            "Secret names must use uppercase letters, numbers, and underscores",
+          ),
+        z.string().min(1).max(8_192),
+      )
+      .refine(
+        (secrets) => Object.keys(secrets).length <= 20,
+        "A maximum of 20 secrets is allowed",
+      )
+      .refine(
+        (secrets) =>
+          Object.keys(secrets).every((name) => !reservedSecretNames.has(name)),
+        "Secret name conflicts with a reserved environment variable",
+      )
+      .optional(),
   })
   .strict();
 
@@ -223,7 +254,11 @@ export async function createApp(
     async (request, reply) => {
       const { id } = agentIdParams.parse(request.params);
       const body = messageBody.parse(request.body);
-      const result = await service.sendMessage(id, body.content);
+      const result = await service.sendMessage(
+        id,
+        body.content,
+        body.secrets ?? {},
+      );
       return reply.code(202).send(result);
     }
   );
@@ -242,7 +277,18 @@ export async function createApp(
     { preValidation: validateRequest({ params: runIdParams }) },
     async (request) => {
       const { id } = runIdParams.parse(request.params);
-      return { events: service.getSafetyEvents(id) };
+
+      const events = service.getSafetyEvents(id).map((event) => ({
+        id: event.id,
+        runId: event.runId,
+        agentId: event.agentId,
+        boundary: event.boundary,
+        decision: event.decision,
+        reason: event.reason,
+        timestamp: event.timestamp,
+      }));
+      
+      return { events };
     },
   );
 

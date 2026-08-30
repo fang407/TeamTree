@@ -987,6 +987,156 @@ textarea:focus {
   font-size: 12px;
 }
 
+.secret-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 7px 0 12px;
+  padding: 10px;
+  border: 1px solid #e8e6df;
+  border-radius: 12px;
+  background: #f1f0eb;
+}
+
+.secret-help {
+  color: #999992;
+  font-size: 10px;
+}
+
+.secret-title {
+  display: block;
+  margin-bottom: 2px;
+  color: #464741;
+  font-size: 11px;
+}
+
+.secret-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.secret-clear {
+  min-height: 26px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.secret-error {
+  color: #ae4646;
+  font-size: 10px;
+}
+
+.secret-help code {
+  color: #6350c5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.secret-row {
+  display: grid;
+  grid-template-columns: 18px minmax(120px, 0.7fr) minmax(0, 1.3fr) auto auto auto auto;
+  gap: 7px;
+  align-items: center;
+}
+
+.secret-row-number {
+  color: #aaa8a0;
+  font-size: 9px;
+  text-align: center;
+}
+
+.secret-row input {
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #e1dfd8;
+  border-radius: 9px;
+  background: #fffefb;
+  color: #464741;
+  font-size: 11px;
+}
+
+.secret-row input:focus {
+  border-color: var(--purple);
+  outline: 2px solid rgba(111, 87, 214, 0.12);
+}
+
+.secret-row input::placeholder {
+  color: #aaa8a0;
+}
+
+.secret-add {
+  align-self: flex-start;
+  min-height: 30px;
+  padding: 0 11px;
+  font-size: 11px;
+}
+
+.secret-remove {
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.secret-toggle {
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.secret-order {
+  width: 28px;
+  min-height: 30px;
+  padding: 0;
+  font-size: 13px;
+}
+
+.secret-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.secret-tool {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.secret-tools select {
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid #e1dfd8;
+  border-radius: 9px;
+  background: #fffefb;
+  color: #464741;
+  font-size: 10px;
+}
+
+.secret-attached {
+  color: #77766f;
+  font-size: 10px;
+}
+
+@media (max-width: 620px) {
+  .secret-row {
+    grid-template-columns: 14px minmax(0, 1fr) minmax(0, 1fr) auto auto auto auto;
+    gap: 4px;
+  }
+
+  .secret-order,
+  .secret-toggle,
+  .secret-remove {
+    width: 26px;
+    padding: 0;
+  }
+}
+
 .composer-footer {
   display: flex;
   justify-content: space-between;
