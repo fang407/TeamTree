@@ -61,6 +61,8 @@ export interface AgentRun {
   output: string | null;
   error: string | null;
   usage: RunUsage | null;
+  stepCount: number | null;
+  toolCallCount: number | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -90,6 +92,20 @@ export interface RunnerResult {
   output: string;
   threadId: string | null;
   usage: RunUsage | null;
+  /**
+   * Count of every completed Codex work item (reasoning, commands, file
+   * changes, tool calls, the final message, etc). A coarse "how much did
+   * the agent do" signal, not a step-by-step trace. Optional so runner
+   * implementations/mocks that don't track this can omit it — AgentService
+   * falls back to null ("not reported") in that case.
+   */
+  stepCount?: number;
+  /**
+   * Subset of stepCount that represent an actual action taken against the
+   * world: shell commands, file edits, MCP tool calls, web searches.
+   * Excludes reasoning and the final agent_message.
+   */
+  toolCallCount?: number;
 }
 
 export interface RunnerSafetyEvent {

@@ -54,6 +54,8 @@ export interface AgentRun {
     cachedInputTokens?: number;
     outputTokens?: number;
   } | null;
+  stepCount: number | null;
+  toolCallCount: number | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;

@@ -1044,11 +1044,15 @@ export default function App() {
                   </div>
                   <div>
                     <dt>Steps</dt>
-                    <dd className="run-detail-unavailable">Not reported</dd>
+                    <dd className={activeRun?.stepCount == null ? "run-detail-unavailable" : undefined}>
+                      {activeRun?.stepCount ?? "Not reported"}
+                    </dd>
                   </div>
                   <div>
                     <dt>Tool calls</dt>
-                    <dd className="run-detail-unavailable">Not reported</dd>
+                    <dd className={activeRun?.toolCallCount == null ? "run-detail-unavailable" : undefined}>
+                      {activeRun?.toolCallCount ?? "Not reported"}
+                    </dd>
                   </div>
                   <div>
                     <dt>Token usage</dt>

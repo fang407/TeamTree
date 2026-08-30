@@ -207,6 +207,8 @@ export class AgentService {
       output: null,
       error: null,
       usage: null,
+      stepCount: null,
+      toolCallCount: null,
       startedAt: null,
       completedAt: null,
       createdAt: timestamp,
@@ -382,6 +384,8 @@ export class AgentService {
         storedRun.status = "completed";
         storedRun.output = safeOutput;
         storedRun.usage = result.usage;
+        storedRun.stepCount = result.stepCount ?? null;
+        storedRun.toolCallCount = result.toolCallCount ?? null;
         storedRun.completedAt = completedAt;
         database.messages.push({
           id: randomUUID(),

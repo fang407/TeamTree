@@ -28,7 +28,22 @@ export interface ParsedEvents {
   threadId: string | null;
   usage: RunUsage | null;
   errors: string[];
+  /** Optional so existing call sites that build a plain object literal
+   * (e.g. tests) keep type-checking without needing these fields. */
+  stepCount?: number;
+  toolCallCount?: number;
 }
+
+/** item.type values from `codex exec --json` that represent an actual
+ * action taken against the world, as opposed to internal reasoning or the
+ * final message back to the user. */
+const TOOL_CALL_ITEM_TYPES = new Set([
+  "command_execution",
+  "file_change",
+  "mcp_tool_call",
+  "web_search",
+  "function_call",
+]);
 
 export function buildCodexArgs(
   request: RunnerRequest,
@@ -66,6 +81,15 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
 
   if (event.type === "item.completed" && event.item && typeof event.item === "object") {
     const item = event.item as Record<string, unknown>;
+
+    // Every completed work item counts as one "step" — reasoning, commands,
+    // file edits, tool calls, the final message, all of it.
+    parsed.stepCount = (parsed.stepCount ?? 0) + 1;
+
+    if (typeof item.type === "string" && TOOL_CALL_ITEM_TYPES.has(item.type)) {
+      parsed.toolCallCount = (parsed.toolCallCount ?? 0) + 1;
+    }
+
     if (item.type === "agent_message" && typeof item.text === "string") {
       parsed.messages.push(item.text);
     }
@@ -167,6 +191,8 @@ export class CodexRunner implements AgentRunner {
       threadId: request.threadId,
       usage: null,
       errors: [],
+      stepCount: 0,
+      toolCallCount: 0,
     };
     let stdout = "";
     let stderr = "";
@@ -243,6 +269,8 @@ export class CodexRunner implements AgentRunner {
         output,
         threadId: parsed.threadId,
         usage: parsed.usage,
+        stepCount: parsed.stepCount ?? 0,
+        toolCallCount: parsed.toolCallCount ?? 0,
       };
     } finally {
       clearTimeout(timeout);
