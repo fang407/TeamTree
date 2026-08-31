@@ -30,8 +30,13 @@ function redactSecrets(
         allowPartial && secret.length > 6
           ? `[PARTIAL_SECRET:${secret.slice(0, 3)}…${secret.slice(-3)}]`
           : "[REDACTED_SECRET]";
-
-      return redacted.split(secret).join(replacement);
+      const full = redacted.split(secret).join(replacement);
+      // Also remove recognizable ends if a runner echoes a shortened value.
+      // Partial display is a local UI choice; output scrubbing stays strict.
+      if (secret.length < 12) return full;
+      return full
+        .split(secret.slice(0, 6)).join("[REDACTED_SECRET_FRAGMENT]")
+        .split(secret.slice(-6)).join("[REDACTED_SECRET_FRAGMENT]");
     },
     text,
   );
@@ -388,6 +393,7 @@ export class AgentService {
           boundary: "SERVICE",
           decision: "BLOCK",
           reason: safetyResult.reason,
+          metadata: this.auditMetadata(safetyResult.findings, secrets),
         });
 
         return;
@@ -399,6 +405,7 @@ export class AgentService {
         boundary: "SERVICE",
         decision: "ALLOW",
         reason: safetyResult.reason,
+        metadata: this.auditMetadata(safetyResult.findings, secrets),
       });
 
       const result = await this.runner.run({
@@ -464,11 +471,13 @@ export class AgentService {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
-      const safeMessage = redactSecrets(
-        this.safetyMiddleware.redactText(message),
-        secrets,
-        this.config.allowPartialSecretRedaction,
-      );
+      const safeMessage = cancelled
+        ? "Run cancelled"
+        : redactSecrets(
+            this.safetyMiddleware.redactText(message),
+            secrets,
+            this.config.allowPartialSecretRedaction,
+          );
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -539,5 +548,16 @@ export class AgentService {
         timestamp: now(),
       });
     });
+  }
+
+  private auditMetadata(
+    findings: SafetyCheckResult["findings"],
+    secrets: Record<string, string>,
+  ): NonNullable<SafetyEvent["metadata"]> {
+    return {
+      findingIds: [...new Set(findings.map((finding) => finding.id))],
+      findingCategories: [...new Set(findings.map((finding) => finding.category))],
+      secretNames: Object.keys(secrets),
+    };
   }
 }
