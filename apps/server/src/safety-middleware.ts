@@ -13,7 +13,10 @@ import {
   FRAMEWORK_PII_PATTERNS,
   type ComplianceFramework,
   type PiiPattern,
+  type PiiSeverity,
 } from "./patterns/compliancePatterns.js";
+
+export type { ComplianceFramework };
 
 import {
   normalizeForInjectionScan,
@@ -56,6 +59,19 @@ export interface SafetyPolicyConfig {
      * actually gates, and its stated limitations.
      */
     frameworks: ComplianceFramework[];
+    /**
+     * Fine-grained overrides on top of framework selection, by pattern id
+     * (see patterns/compliancePatterns.ts and SECRET_PATTERNS ids are not
+     * included here — this only covers PII patterns). A pattern is active
+     * if: it's in enabledPatternIds (forces on regardless of frameworks),
+     * OR (none of its frameworks are excluded AND (it has no frameworks —
+     * i.e. baseline — OR one of its frameworks is in `frameworks`)) AND
+     * it's not in disabledPatternIds (forces off regardless of frameworks
+     * or baseline status). disabledPatternIds always wins over
+     * enabledPatternIds if a pattern id somehow ends up in both.
+     */
+    enabledPatternIds: string[];
+    disabledPatternIds: string[];
   };
 
   injection: {
@@ -78,6 +94,8 @@ export const DEFAULT_POLICY_CONFIG: SafetyPolicyConfig = {
     // medicare-beneficiary-id) — see patterns/compliancePatterns.ts for
     // the full per-pattern framework tagging.
     frameworks: ["GDPR", "CCPA"],
+    enabledPatternIds: [],
+    disabledPatternIds: [],
   },
 
   injection: {
@@ -106,9 +124,91 @@ export interface SafetyCheckResult {
 
 export class SafetyMiddleware {
   constructor(
-    private readonly config: SafetyPolicyConfig =
+    private config: SafetyPolicyConfig =
       DEFAULT_POLICY_CONFIG,
   ) {}
+
+  /**
+   * Snapshot of the currently active policy. Returned deep-ish (arrays
+   * copied) so a caller mutating the result can't accidentally mutate
+   * live middleware state.
+   */
+  getConfig(): SafetyPolicyConfig {
+    return {
+      ...this.config,
+      compliance: {
+        frameworks: [...this.config.compliance.frameworks],
+        enabledPatternIds: [...this.config.compliance.enabledPatternIds],
+        disabledPatternIds: [...this.config.compliance.disabledPatternIds],
+      },
+      injection: {
+        blockOn: [...this.config.injection.blockOn],
+      },
+    };
+  }
+
+  /**
+   * Catalog of every PII pattern this middleware knows about — id,
+   * human-readable description, which framework(s) it's tagged with, and
+   * severity. Deliberately excludes the regex/validate function (not
+   * serializable, and irrelevant to a UI listing). Used to render
+   * per-pattern override controls without duplicating the pattern list on
+   * the client.
+   */
+  listPiiPatterns(): {
+    id: string;
+    description: string;
+    severity: PiiSeverity;
+    frameworks: ComplianceFramework[];
+  }[] {
+    return [...BASELINE_PII_PATTERNS, ...FRAMEWORK_PII_PATTERNS].map(
+      (pattern) => ({
+        id: pattern.id,
+        description: pattern.description,
+        severity: pattern.severity,
+        frameworks: pattern.frameworks,
+      }),
+    );
+  }
+
+  /**
+   * Runtime update for the redaction-facing subset of the policy: whether
+   * redaction runs at all, which compliance frameworks' PII patterns are
+   * active, and per-pattern overrides on top of that framework selection.
+   * Deliberately does not expose promptSafetyEnabled or injection.blockOn
+   * here — those are a different rule category, out of scope for
+   * "redaction rules" config. In-memory only for now: a server restart
+   * reverts to the COMPLIANCE_FRAMEWORKS env default. Persisting this is
+   * a natural next step once the simple version is validated.
+   */
+  updateRedactionRules(update: {
+    redactionEnabled?: boolean | undefined;
+    complianceFrameworks?: ComplianceFramework[] | undefined;
+    enabledPatternIds?: string[] | undefined;
+    disabledPatternIds?: string[] | undefined;
+  }): SafetyPolicyConfig {
+    this.config = {
+      ...this.config,
+      ...(update.redactionEnabled !== undefined
+        ? { redactionEnabled: update.redactionEnabled }
+        : {}),
+      compliance: {
+        frameworks:
+          update.complianceFrameworks !== undefined
+            ? [...update.complianceFrameworks]
+            : [...this.config.compliance.frameworks],
+        enabledPatternIds:
+          update.enabledPatternIds !== undefined
+            ? [...update.enabledPatternIds]
+            : [...this.config.compliance.enabledPatternIds],
+        disabledPatternIds:
+          update.disabledPatternIds !== undefined
+            ? [...update.disabledPatternIds]
+            : [...this.config.compliance.disabledPatternIds],
+      },
+    };
+    return this.getConfig();
+  }
 
   async evaluate(
     prompt: string,
@@ -257,26 +357,43 @@ export class SafetyMiddleware {
     return findings;
   }
 
+  private isPiiPatternActive(pattern: PiiPattern): boolean {
+    const { frameworks, enabledPatternIds, disabledPatternIds } =
+      this.config.compliance;
+
+    // An explicit disable always wins, regardless of frameworks or
+    // baseline status.
+    if (disabledPatternIds.includes(pattern.id)) {
+      return false;
+    }
+
+    // An explicit enable forces the pattern on regardless of framework
+    // selection — this is what lets a user turn on, say, just SSN
+    // detection without enabling the entire HIPAA bundle.
+    if (enabledPatternIds.includes(pattern.id)) {
+      return true;
+    }
+
+    // Baseline patterns (no framework tags) are on by default unless
+    // explicitly disabled above.
+    if (pattern.frameworks.length === 0) {
+      return true;
+    }
+
+    return pattern.frameworks.some((framework) =>
+      frameworks.includes(framework),
+    );
+  }
+
   private detectPii(
     prompt: string,
   ): Finding[] {
     const findings: Finding[] = [];
 
-    const activeFrameworks = this.config.compliance.frameworks;
-
     const activePatterns: PiiPattern[] = [
-      // Baseline patterns (currently just email) are always active,
-      // independent of framework selection.
       ...BASELINE_PII_PATTERNS,
-
-      // Framework-gated patterns only run if at least one of the
-      // pattern's tagged frameworks is enabled in config.
-      ...FRAMEWORK_PII_PATTERNS.filter((pattern) =>
-        pattern.frameworks.some((framework) =>
-          activeFrameworks.includes(framework),
-        ),
-      ),
-    ];
+      ...FRAMEWORK_PII_PATTERNS,
+    ].filter((pattern) => this.isPiiPatternActive(pattern));
 
     for (const pattern of activePatterns) {
       for (const match of prompt.matchAll(pattern.regex)) {

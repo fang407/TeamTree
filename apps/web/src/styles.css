@@ -530,6 +530,210 @@ button {
   gap: 10px;
 }
 
+.safety-panel-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.redaction-settings-trigger {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: 120ms ease;
+}
+
+.redaction-settings-trigger:hover {
+  border-color: var(--purple);
+  color: var(--purple-dark);
+  background: var(--purple-soft);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(32, 33, 31, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 20px;
+}
+
+.modal-panel {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 20px;
+  width: 100%;
+  max-width: 400px;
+  max-height: min(600px, 85vh);
+  overflow-y: auto;
+}
+
+.modal-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.modal-panel-heading strong {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.modal-close {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal-close:hover {
+  background: var(--purple-soft);
+  color: var(--purple-dark);
+}
+
+.redaction-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.redaction-settings-subhead {
+  margin: 0 0 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #898982;
+}
+
+.redaction-settings-note {
+  margin: 0 0 12px;
+  font-size: 10px;
+  line-height: 1.55;
+  color: #86867f;
+}
+
+.redaction-advanced {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.redaction-advanced summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--purple-dark);
+  list-style: none;
+}
+
+.redaction-advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.redaction-advanced summary::before {
+  content: "▸ ";
+}
+
+.redaction-advanced[open] summary::before {
+  content: "▾ ";
+}
+
+.redaction-advanced .redaction-settings-note {
+  margin-top: 8px;
+}
+
+.redaction-advanced .redaction-frameworks {
+  margin-top: 10px;
+}
+
+.redaction-frameworks {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.redaction-framework-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.redaction-framework-row input:disabled {
+  cursor: not-allowed;
+}
+
+.redaction-framework-row span {
+  display: block;
+  color: #74746e;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.redaction-framework-row strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* Override the global input{width:100%;height:40px;...} text-field rule —
+   without this, checkboxes inherit that sizing and render as giant
+   full-width rounded rectangles instead of normal checkboxes. */
+.redaction-settings-panel input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  flex-shrink: 0;
+  margin: 2px 0 0;
+  padding: 0;
+  border-radius: 4px;
+  accent-color: var(--purple);
+}
+
+.redaction-toggle-row input[type="checkbox"] {
+  margin-top: 0;
+}
+
+.redaction-settings-error {
+  margin: 10px 0 0;
+  font-size: 10px;
+  color: #9e4545;
+}
+
+.redaction-settings-loading {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
+}
+
 .run-details {
   display: grid;
   gap: 10px;

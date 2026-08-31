@@ -15,7 +15,10 @@ const workspaces = new WorkspaceManager(config.workspaceRoot);
 const runner = createRunner(config);
 const safetyMiddleware = new SafetyMiddleware({
   ...DEFAULT_POLICY_CONFIG,
-  compliance: { frameworks: config.complianceFrameworks },
+  compliance: {
+    ...DEFAULT_POLICY_CONFIG.compliance,
+    frameworks: config.complianceFrameworks,
+  },
 });
 const service = new AgentService(config, store, workspaces, runner, safetyMiddleware);
 await service.initialize();

@@ -3,10 +3,34 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import type { AgentService } from "./agent-service.js";
 
+const availablePatterns = [
+  { id: "email-address", description: "Email address", severity: "low", frameworks: [] },
+  { id: "us-ssn", description: "US SSN", severity: "high", frameworks: ["HIPAA", "CCPA"] },
+];
+
 const service = {
   listAgents: () => [],
   systemInfo: async () => ({}),
   getSafetyEvents: () => [],
+  getRedactionConfig: () => ({
+    redactionEnabled: true,
+    complianceFrameworks: ["GDPR", "CCPA"],
+    enabledPatternIds: [],
+    disabledPatternIds: [],
+    availablePatterns,
+  }),
+  updateRedactionConfig: (update: {
+    redactionEnabled?: boolean;
+    complianceFrameworks?: string[];
+    enabledPatternIds?: string[];
+    disabledPatternIds?: string[];
+  }) => ({
+    redactionEnabled: update.redactionEnabled ?? true,
+    complianceFrameworks: update.complianceFrameworks ?? ["GDPR", "CCPA"],
+    enabledPatternIds: update.enabledPatternIds ?? [],
+    disabledPatternIds: update.disabledPatternIds ?? [],
+    availablePatterns,
+  }),
 } as unknown as AgentService;
 
 describe("HTTP boundary", () => {
@@ -318,6 +342,98 @@ describe("HTTP boundary", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.body).not.toContain(secret);
+    await app.close();
+  });
+
+  it("returns the current redaction config", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/redaction-config",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      redactionEnabled: true,
+      complianceFrameworks: ["GDPR", "CCPA"],
+      enabledPatternIds: [],
+      disabledPatternIds: [],
+      availablePatterns,
+    });
+    await app.close();
+  });
+
+  it("updates the redaction config with a valid partial body", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/redaction-config",
+      headers: { "content-type": "application/json" },
+      payload: { complianceFrameworks: ["HIPAA"] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      redactionEnabled: true,
+      complianceFrameworks: ["HIPAA"],
+      enabledPatternIds: [],
+      disabledPatternIds: [],
+      availablePatterns,
+    });
+    await app.close();
+  });
+
+  it("updates per-pattern enable/disable overrides through the HTTP layer", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/redaction-config",
+      headers: { "content-type": "application/json" },
+      payload: {
+        enabledPatternIds: ["us-ssn"],
+        disabledPatternIds: ["email-address"],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      redactionEnabled: true,
+      complianceFrameworks: ["GDPR", "CCPA"],
+      enabledPatternIds: ["us-ssn"],
+      disabledPatternIds: ["email-address"],
+      availablePatterns,
+    });
+    await app.close();
+  });
+
+  it("rejects a redaction config update with an unknown framework", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/redaction-config",
+      headers: { "content-type": "application/json" },
+      payload: { complianceFrameworks: ["NOT_A_FRAMEWORK"] },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects an empty redaction config update", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/redaction-config",
+      headers: { "content-type": "application/json" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(400);
     await app.close();
   });
 

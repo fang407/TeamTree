@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Message, SafetyEvent, SystemInfo } from "./types";
+import type { Agent, AgentRun, ComplianceFramework, Message, RedactionConfig, SafetyEvent, SystemInfo } from "./types";
 
 export interface ApiErrorDetail {
   field: string;
@@ -115,4 +115,15 @@ export const api = {
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   safetyEvents: (id: string) =>
     request<{ events: SafetyEvent[] }>("/api/runs/" + id + "/safety-events"),
+  redactionConfig: () => request<RedactionConfig>("/api/redaction-config"),
+  updateRedactionConfig: (update: {
+    redactionEnabled?: boolean;
+    complianceFrameworks?: ComplianceFramework[];
+    enabledPatternIds?: string[];
+    disabledPatternIds?: string[];
+  }) =>
+    request<RedactionConfig>("/api/redaction-config", {
+      method: "PATCH",
+      body: JSON.stringify(update),
+    }),
 };

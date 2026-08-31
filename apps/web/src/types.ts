@@ -75,3 +75,20 @@ export interface SystemInfo {
   containerEngine: string | null;
   runtime: string;
 }
+
+export type ComplianceFramework = "GDPR" | "HIPAA" | "CCPA" | "PCI_DSS";
+
+export interface AvailablePiiPattern {
+  id: string;
+  description: string;
+  severity: "low" | "medium" | "high" | "critical";
+  frameworks: ComplianceFramework[];
+}
+
+export interface RedactionConfig {
+  redactionEnabled: boolean;
+  complianceFrameworks: ComplianceFramework[];
+  enabledPatternIds: string[];
+  disabledPatternIds: string[];
+  availablePatterns: AvailablePiiPattern[];
+}
