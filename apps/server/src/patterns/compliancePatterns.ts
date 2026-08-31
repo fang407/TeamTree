@@ -97,20 +97,21 @@ export const FRAMEWORK_PII_PATTERNS: PiiPattern[] = [
   },
   {
     id: "ipv4-address",
-    description:
-      "IPv4 address — an explicit HIPAA Safe Harbor identifier (#15); GDPR treats it " +
-      "as personal data (Recital 30, CJEU Breyer); CCPA's definition of personal " +
-      "information explicitly includes internet/network activity identifiers.",
+    // Explicit HIPAA Safe Harbor identifier (#15); GDPR treats it as
+    // personal data (Recital 30, CJEU Breyer); CCPA's "personal
+    // information" definition explicitly includes network activity
+    // identifiers.
+    description: "IPv4 address (network identifier)",
     regex: /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g,
     severity: "low",
     frameworks: ["GDPR", "HIPAA", "CCPA"],
   },
   {
     id: "date-of-birth",
-    description:
-      "Date of birth (keyword-gated: DOB/birth date/born on + a date). " +
-      "HIPAA Safe Harbor requires redacting all date elements tied to an " +
-      "individual more granular than year.",
+    // Keyword-gated: DOB/birth date/born on + a date. HIPAA Safe Harbor
+    // requires redacting all date elements tied to an individual more
+    // granular than year.
+    description: "Date of birth (matches DOB, birth date, born on + a date)",
     regex:
       /\b(?:DOB|date of birth|birth\s*date|born on)\s*[:\-]?\s*(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\d{4}-\d{2}-\d{2})\b/gi,
     severity: "high",
@@ -118,29 +119,28 @@ export const FRAMEWORK_PII_PATTERNS: PiiPattern[] = [
   },
   {
     id: "medical-record-number",
-    description: "Generic medical/health record number (keyword + digits)",
+    description: "Medical/health record number",
     regex: /\b(?:MRN|medical record(?:\s+number)?)\s*[:#]?\s*\d{6,10}\b/gi,
     severity: "high",
     frameworks: ["HIPAA"],
   },
   {
     id: "medicare-beneficiary-id",
-    description:
-      "US Medicare Beneficiary Identifier (MBI) shape — HIPAA identifier. " +
-      "NOTE: this is a loose 4-3-4 alphanumeric shape (e.g. 1EG4-TE5-MK73), " +
-      "not the exact CMS per-position spec (which excludes ambiguous letters " +
-      "like S/L/O/I/B/Z in specific positions). Verify against current CMS " +
-      "documentation before relying on this for real detection — flagged " +
-      "here rather than asserting false precision.",
+    // This is a loose 4-3-4 alphanumeric shape (e.g. 1EG4-TE5-MK73), not
+    // the exact CMS per-position spec (which excludes ambiguous letters
+    // like S/L/O/I/B/Z in specific positions). Verify against current CMS
+    // documentation before relying on this for real detection — flagged
+    // here rather than asserting false precision.
+    description: "Medicare Beneficiary Identifier (MBI) — health insurance ID",
     regex: /\b[1-9][A-Z0-9]{3}-[A-Z0-9]{3}-[A-Z0-9]{4}\b/g,
     severity: "high",
     frameworks: ["HIPAA"],
   },
   {
     id: "us-bank-routing-number",
-    description:
-      "US bank routing number (ABA checksum-validated: 3/7/1-weighted digit " +
-      "sum mod 10 == 0 — a real, verifiable algorithm, unlike the MBI shape above)",
+    // ABA checksum-validated: 3/7/1-weighted digit sum mod 10 == 0 — a
+    // real, verifiable algorithm, unlike the MBI shape above.
+    description: "US bank routing number (9-digit ABA number)",
     regex: /\b\d{9}\b/g,
     severity: "high",
     validate: passesAbaRoutingChecksum,
@@ -148,10 +148,10 @@ export const FRAMEWORK_PII_PATTERNS: PiiPattern[] = [
   },
   {
     id: "us-drivers-license-generic",
-    description:
-      "US driver's license number — format varies by state; this is a " +
-      "low-confidence generic heuristic (requires an explicit 'DL' or " +
-      "'driver's license' keyword nearby), not an authoritative per-state validator.",
+    // Format varies by state; this is a low-confidence heuristic
+    // (requires an explicit "DL" or "driver's license" keyword nearby),
+    // not an authoritative per-state validator.
+    description: "US driver's license number (format varies by state)",
     regex: /\b(?:DL|driver'?s?\s*licen[cs]e)\s*[:#]?\s*[A-Z0-9]{6,12}\b/gi,
     severity: "medium",
     frameworks: ["CCPA"],

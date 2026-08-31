@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, getUserFacingError, setAuthToken } from "./api";
 import { RunControls } from "./components/RunControls";
 import { SafetyEvents } from "./components/SafetyEvents";
+import { RedactionSettings } from "./components/RedactionSettings";
 import { SafetyStatus } from "./components/SafetyStatus";
 import type { Agent, AgentRun, Message, SafetyEvent, SystemInfo } from "./types";
 
@@ -1076,7 +1077,10 @@ export default function App() {
               <aside className="safety-panel">
                 <div className="safety-panel-heading">
                   <span className="eyebrow">Current run</span>
-                  <SafetyStatus run={activeRun} events={safetyEvents} />
+                  <div className="safety-panel-heading-actions">
+                    <RedactionSettings />
+                    <SafetyStatus run={activeRun} events={safetyEvents} />
+                  </div>
                 </div>
                 <dl className="run-details">
                   <div>

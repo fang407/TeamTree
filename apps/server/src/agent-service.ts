@@ -13,7 +13,7 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
-import { SafetyMiddleware, type SafetyCheckResult  } from "./safety-middleware.js";
+import { SafetyMiddleware, type SafetyCheckResult, type ComplianceFramework } from "./safety-middleware.js";
 
 const now = () => new Date().toISOString();
 
@@ -274,6 +274,55 @@ export class AgentService {
         this.config.runtimeProvider === "container"
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
+    };
+  }
+
+  getRedactionConfig(): {
+    redactionEnabled: boolean;
+    complianceFrameworks: ComplianceFramework[];
+    enabledPatternIds: string[];
+    disabledPatternIds: string[];
+    availablePatterns: {
+      id: string;
+      description: string;
+      severity: string;
+      frameworks: ComplianceFramework[];
+    }[];
+  } {
+    const policy = this.safetyMiddleware.getConfig();
+    return {
+      redactionEnabled: policy.redactionEnabled,
+      complianceFrameworks: policy.compliance.frameworks,
+      enabledPatternIds: policy.compliance.enabledPatternIds,
+      disabledPatternIds: policy.compliance.disabledPatternIds,
+      availablePatterns: this.safetyMiddleware.listPiiPatterns(),
+    };
+  }
+
+  updateRedactionConfig(update: {
+    redactionEnabled?: boolean | undefined;
+    complianceFrameworks?: ComplianceFramework[] | undefined;
+    enabledPatternIds?: string[] | undefined;
+    disabledPatternIds?: string[] | undefined;
+  }): {
+    redactionEnabled: boolean;
+    complianceFrameworks: ComplianceFramework[];
+    enabledPatternIds: string[];
+    disabledPatternIds: string[];
+    availablePatterns: {
+      id: string;
+      description: string;
+      severity: string;
+      frameworks: ComplianceFramework[];
+    }[];
+  } {
+    const policy = this.safetyMiddleware.updateRedactionRules(update);
+    return {
+      redactionEnabled: policy.redactionEnabled,
+      complianceFrameworks: policy.compliance.frameworks,
+      enabledPatternIds: policy.compliance.enabledPatternIds,
+      disabledPatternIds: policy.compliance.disabledPatternIds,
+      availablePatterns: this.safetyMiddleware.listPiiPatterns(),
     };
   }
 
