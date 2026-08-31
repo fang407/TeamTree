@@ -8,9 +8,10 @@ Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> This is a single-user proof of concept. It includes a hackathon safety
+> middleware and safety-event audit trail, but it is not a production identity,
+> authorization, compliance, or hardened-sandbox solution. Do not use
+> production data or credentials. See [SECURITY.md](SECURITY.md).
 
 ## Screenshots
 
@@ -30,6 +31,8 @@ Volcengine ECS.
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
+- Safety middleware for redaction, prompt-injection blocking, Runner lifecycle
+  events, and a visible safety dashboard
 
 ## Requirements
 
@@ -243,6 +246,7 @@ docker compose config
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
+- [Hackathon demo and repository handoff](docs/HACKATHON_DEMO.md)
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 
