@@ -1302,6 +1302,12 @@ textarea:focus {
   font-size: 10px;
 }
 
+.secret-toggle-placeholder {
+  display: block;
+  width: 45px;
+  min-height: 30px;
+}
+
 .secret-order {
   width: 28px;
   min-height: 30px;

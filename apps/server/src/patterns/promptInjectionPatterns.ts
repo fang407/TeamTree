@@ -43,6 +43,69 @@ export interface InjectionPattern {
 }
 
 export const PROMPT_INJECTION_PATTERNS: InjectionPattern[] = [
+  {
+    id: "safety-policy-bypass",
+    description: "Attempt to disable or ignore safety rules or redaction",
+    category: "instruction_override",
+    regex: /\b(?:ignore|disable|turn\s+off|bypass|do\s+not\s+follow)\s+(?:all\s+|the\s+)?(?:safety\s+(?:rules?|checks?|filter)|redaction|security\s+(?:rules?|checks?))\b/gi,
+    severity: "critical",
+  },
+  {
+    id: "environment-secret-exfiltration",
+    description: "Request to print environment variables or hidden values",
+    category: "prompt_exfiltration",
+    regex: /\b(?:print|show|display|output|dump|reveal)\s+(?:all\s+)?(?:environment\s+variables?|env\s+vars?|hidden\s+values?|secrets?|credentials?)\b/gi,
+    severity: "high",
+  },
+  {
+    id: "original-prompt-exfiltration",
+    description: "Request to reveal the original or unredacted prompt or tool output",
+    category: "prompt_exfiltration",
+    regex: /\b(?:show|print|return|reveal|give\s+me)\s+(?:the\s+)?(?:original|raw|unredacted)\s+(?:prompt|request|tool\s+output|output)\b/gi,
+    severity: "high",
+  },
+  {
+    id: "reveal-developer-message",
+    description: "Request to reveal developer or hidden application messages",
+    category: "prompt_exfiltration",
+    regex: /\b(?:show|print|return|reveal|repeat|display)\s+(?:me\s+)?(?:the\s+)?(?:developer\s+(?:message|prompt|instructions?)|hidden\s+(?:message|context)|application\s+instructions?)\b/gi,
+    severity: "high",
+  },
+  {
+    id: "reveal-tool-arguments",
+    description: "Request to expose hidden tool arguments or internal tool data",
+    category: "prompt_exfiltration",
+    regex: /\b(?:show|print|return|reveal|dump|display)\s+(?:all\s+)?(?:hidden\s+)?(?:tool\s+(?:arguments?|parameters?|inputs?)|function\s+(?:arguments?|parameters?)|internal\s+tool\s+data)\b/gi,
+    severity: "high",
+  },
+  {
+    id: "reveal-conversation-history",
+    description: "Request to expose hidden conversation or prior run history",
+    category: "prompt_exfiltration",
+    regex: /\b(?:show|print|return|reveal|dump|repeat)\s+(?:the\s+)?(?:full\s+)?(?:conversation\s+history|chat\s+history|prior\s+(?:messages?|conversation)|hidden\s+messages?)\b/gi,
+    severity: "high",
+  },
+  {
+    id: "fake-authority-claim",
+    description: "Claim of administrator or developer approval used to bypass safeguards",
+    category: "instruction_override",
+    regex: /\b(?:the\s+)?(?:admin(?:istrator)?|developer|system\s+owner|security\s+team)\s+(?:has\s+)?(?:approved|authorized|允许|said)\s+(?:you\s+to\s+)?(?:ignore|disable|bypass|reveal|show|print)\b/gi,
+    severity: "high",
+  },
+  {
+    id: "user-text-as-system-instruction",
+    description: "Attempt to make user-provided text act as a system instruction",
+    category: "instruction_override",
+    regex: /\b(?:treat|consider|regard)\s+(?:the\s+)?(?:user|following|next|quoted)\s+(?:text|message|content|block)\s+as\s+(?:a\s+)?(?:system|developer|administrator)\s+(?:message|instruction|command)\b/gi,
+    severity: "high",
+  },
+  {
+    id: "encoded-instruction-bypass",
+    description: "Possible encoded or obfuscated instruction intended to bypass safeguards",
+    category: "instruction_override",
+    regex: /\b(?:decode\s+(?:this\s+)?(?:base\s*64|rot\s*13|hex)|(?:base\s*64|rot\s*13|hex)\s+(?:this|the\s+following))\s+(?:and\s+)?(?:follow|execute|obey)\s+(?:it|the\s+result)\b/gi,
+    severity: "medium",
+  },
   // --- Instruction override (Vigil: "Instruction Bypass") --------------------
   {
     id: "ignore-previous-instructions",

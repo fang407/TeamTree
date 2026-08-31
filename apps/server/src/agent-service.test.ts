@@ -508,6 +508,58 @@ describe("Agent lifecycle", () => {
     ]);
   });
 
+  it("records only safe request metadata in the safety audit", async () => {
+    const secret = "audit-secret-value-123";
+    const service = await makeService({
+      run: async () => ({ output: "done", threadId: null, usage: null }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Audit Metadata" });
+
+    const { run } = await service.sendMessage(
+      agent.id,
+      "Use this credential: " + secret,
+      { API_TOKEN: secret },
+    );
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const events = service.getSafetyEvents(run.id);
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain(secret);
+    expect(events[0]?.metadata).toEqual({
+      findingIds: [],
+      findingCategories: [],
+      secretNames: ["API_TOKEN"],
+    });
+  });
+
+  it("redacts exact and partial secret fragments from generated-file output", async () => {
+    const secret = "generated-file-secret-123456";
+    const runner: AgentRunner = {
+      run: async () => ({
+        output: `Created env-check.txt with ${secret}; prefix ${secret.slice(0, 6)} and suffix ${secret.slice(-6)}.`,
+        threadId: null,
+        usage: null,
+      }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Generated File Redaction" });
+
+    const { run } = await service.sendMessage(agent.id, "Create a file", {
+      FILE_SECRET: secret,
+    });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const output = service.getRun(run.id).output ?? "";
+    expect(output).not.toContain(secret);
+    expect(output).not.toContain(secret.slice(0, 6));
+    expect(output).not.toContain(secret.slice(-6));
+    expect(service.getMessages(agent.id).at(-1)?.content).toBe(output);
+  });
+
   it("records a sanitized run failed audit event", async () => {
     const runner: AgentRunner = {
       run: async () => {
