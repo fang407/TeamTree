@@ -404,7 +404,10 @@ export class AgentService {
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
-        prompt: originalPrompt,
+        // The LLM receives opaque placeholders for inline values. Secrets
+        // intentionally supplied through the UI travel separately as Runner
+        // environment variables and are never interpolated into this prompt.
+        prompt: safetyResult.executionPrompt,
         threadId: agentAtStart.codexThreadId,
         secrets,
         onSafetyEvent: (event) =>

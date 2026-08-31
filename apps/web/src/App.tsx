@@ -72,6 +72,7 @@ type SecretEntry = {
   name: string;
   value: string;
   visible: boolean;
+  classification: "secret" | "non_secret";
 };
 
 type SecretPreset = {
@@ -232,10 +233,10 @@ export default function App() {
     for (const secret of secrets) {
       const name = secret.name.trim();
       if (!name || !secret.value) {
-        return "Complete both the secret name and value, or remove the row.";
+        return "Complete both the run-variable name and value, or remove the row.";
       }
       if (!secretNamePattern.test(name)) {
-        return "Secret names must start with an uppercase letter and use only A–Z, 0–9, and underscores.";
+        return "Run-variable names must start with an uppercase letter and use only A–Z, 0–9, and underscores.";
       }
       if (names.has(name)) return `The secret name ${name} is duplicated.`;
       names.add(name);
@@ -330,18 +331,25 @@ export default function App() {
     setSelectedPreset(presetName);
     const preset = secretPresets.find((item) => item.name === presetName);
     if (!preset) return;
-    setSecrets(preset.keys.map((name) => ({ name, value: "", visible: false })));
+    setSecrets(preset.keys.map((name) => ({
+      name,
+      value: "",
+      visible: false,
+      classification: "secret",
+    })));
   };
 
   const exportSecretNames = () => {
-    const names = secrets.map((secret) => secret.name.trim()).filter(Boolean);
-    const blob = new Blob([JSON.stringify({ secretNames: names }, null, 2)], {
+    const runValues = secrets
+      .filter((secret) => secret.name.trim())
+      .map(({ name, classification }) => ({ name: name.trim(), classification }));
+    const blob = new Blob([JSON.stringify({ runValues }, null, 2)], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "secret-names.json";
+    link.download = "run-value-names.json";
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -351,20 +359,32 @@ export default function App() {
     event.target.value = "";
     if (!file) return;
     try {
-      const data = JSON.parse(await file.text()) as { secretNames?: unknown };
-      if (!Array.isArray(data.secretNames) || data.secretNames.some((name) => typeof name !== "string")) {
-        throw new Error("The file must contain a secretNames array.");
-      }
+      const data = JSON.parse(await file.text()) as { runValues?: unknown; secretNames?: unknown };
+      const imported = Array.isArray(data.runValues)
+        ? data.runValues.map((item) => {
+          if (
+            typeof item !== "object" || item === null ||
+            typeof (item as { name?: unknown }).name !== "string" ||
+            !["secret", "non_secret"].includes((item as { classification?: unknown }).classification as string)
+          ) {
+            throw new Error("Invalid run-value manifest.");
+          }
+          return item as { name: string; classification: SecretEntry["classification"] };
+        })
+        : Array.isArray(data.secretNames) && data.secretNames.every((name) => typeof name === "string")
+          ? data.secretNames.map((name) => ({ name, classification: "secret" as const }))
+          : (() => { throw new Error("The file must contain a runValues array."); })();
       setSecrets(
-        data.secretNames.slice(0, 20).map((name) => ({
+        imported.slice(0, 20).map(({ name, classification }) => ({
           name,
           value: "",
           visible: false,
+          classification,
         })),
       );
       setSelectedPreset("");
     } catch {
-      setError("Unable to import secret names");
+      setError("Unable to import run-value names");
     }
   };
 
@@ -875,8 +895,8 @@ export default function App() {
                 <div className="secret-inputs">
                   <div className="secret-heading">
                     <div>
-                      <strong className="secret-title">Run secrets</strong>
-                      <span className="secret-help">Use <code>$SECRET_NAME</code> in your prompt.</span>
+                      <strong className="secret-title">Run values</strong>
+                      <span className="secret-help">Use <code>$VALUE_NAME</code> in your prompt. Values never enter chat history.</span>
                     </div>
                     {secrets.length > 0 && (
                       <button
@@ -891,6 +911,20 @@ export default function App() {
                   {secrets.map((secret, index) => (
                     <div className="secret-row" key={index}>
                       <span className="secret-row-number" aria-hidden="true">{index + 1}</span>
+                      <select
+                        className="secret-classification"
+                        value={secret.classification}
+                        onChange={(event) => {
+                          const classification = event.target.value as SecretEntry["classification"];
+                          setSecrets((current) => current.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, classification } : item,
+                          ));
+                        }}
+                        aria-label={`Run value ${index + 1} classification`}
+                      >
+                        <option value="secret">Secret</option>
+                        <option value="non_secret">Non-secret</option>
+                      </select>
                       <input
                         type="text"
                         value={secret.name}
@@ -902,13 +936,13 @@ export default function App() {
                             ),
                           );
                         }}
-                        placeholder="SECRET_NAME"
+                        placeholder="VALUE_NAME"
                         autoComplete="off"
                         spellCheck={false}
-                        aria-label={`Secret ${index + 1} name`}
+                        aria-label={`Run value ${index + 1} name`}
                       />
                       <input
-                        type={secret.visible ? "text" : "password"}
+                        type={secret.classification === "non_secret" || secret.visible ? "text" : "password"}
                         value={secret.value}
                         onChange={(event) => {
                           const value = event.target.value;
@@ -918,10 +952,10 @@ export default function App() {
                             ),
                           );
                         }}
-                        placeholder="Secret value"
+                        placeholder={secret.classification === "secret" ? "Secret value" : "Runtime value"}
                         autoComplete="off"
                         spellCheck={false}
-                        aria-label={`Secret ${index + 1} value`}
+                        aria-label={`Run value ${index + 1} value`}
                       />
                       <button
                         className="button button-ghost secret-order"
@@ -945,7 +979,7 @@ export default function App() {
                         })}
                         aria-label={`Move secret ${index + 1} down`}
                       >↓</button>
-                      <button
+                      {secret.classification === "secret" && <button
                         className="button button-ghost secret-toggle"
                         type="button"
                         onClick={() =>
@@ -962,7 +996,7 @@ export default function App() {
                         aria-label={secret.visible ? "Hide secret value" : "Show secret value"}
                       >
                         {secret.visible ? "Hide" : "Show"}
-                      </button>
+                      </button>}
                       <button
                         className="button button-ghost secret-remove"
                         type="button"
@@ -983,18 +1017,18 @@ export default function App() {
                     onClick={() =>
                       setSecrets((current) => [
                         ...current,
-                        { name: "", value: "", visible: false },
+                        { name: "", value: "", visible: false, classification: "secret" },
                       ])
                     }
                     disabled={secrets.length >= 20}
                   >
-                    {secrets.length >= 20 ? "Maximum of 20 secrets" : "+ Add secret"}
+                    {secrets.length >= 20 ? "Maximum of 20 values" : "+ Add run value"}
                   </button>
                   <div className="secret-tools">
                     <select
                       value={selectedPreset}
                       onChange={(event) => loadSecretPreset(event.target.value)}
-                      aria-label="Secret preset"
+                      aria-label="Run-value preset"
                     >
                       <option value="">Load preset…</option>
                       {secretPresets.map((preset) => (
@@ -1002,15 +1036,18 @@ export default function App() {
                       ))}
                     </select>
                     <button className="button button-ghost secret-tool" type="button" onClick={exportSecretNames} disabled={secrets.length === 0}>
-                      Export names
+                      Export value names
                     </button>
                     <label className="button button-ghost secret-tool">
-                      Import names
+                      Import value names
                       <input type="file" accept="application/json" onChange={importSecretNames} hidden />
                     </label>
                   </div>
                   {secrets.length > 0 && (
-                    <span className="secret-attached">{secrets.length} secret{secrets.length === 1 ? "" : "s"} attached to next run</span>
+                    <span className="secret-attached">
+                      {secrets.length} runtime value{secrets.length === 1 ? "" : "s"} attached to next run
+                      {secrets.some((secret) => secret.classification === "secret") && " · secrets stay masked"}
+                    </span>
                   )}
                   {secretValidationError && (
                     <span className="secret-error">{secretValidationError}</span>

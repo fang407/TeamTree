@@ -22,9 +22,12 @@ import {
   normalizeForInjectionScan,
   shannonEntropy,
 } from "./utils/textUtils.js";
+import { secretConfidence } from "./secret-confidence.js";
+import { randomUUID } from "node:crypto";
 
 const REDACTED_SECRET = "[REDACTED_SECRET]";
 const REDACTED_PII = "[REDACTED_PII]";
+const UUID_TOKEN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
 
 type FindingCategory =
   | "secret"
@@ -44,6 +47,35 @@ interface Finding {
   start: number;
   end: number;
   replacement: string;
+}
+
+/**
+ * Ephemeral, in-memory mapping used only while a request is executing.
+ *
+ * It is deliberately not returned by `evaluate`, serialized, logged, or
+ * persisted. The current product sends opaque placeholders to the LLM and
+ * uses the existing `secrets` channel for values a tool legitimately needs.
+ */
+export class SafetyVault {
+  private readonly values = new Map<string, string>();
+
+  replace(value: string, kind = "SECRET"): string {
+    const existing = this.values.get(value);
+    if (existing) return existing;
+
+    const placeholder = `[PRIVATE_${kind}_${randomUUID()}]`;
+    this.values.set(value, placeholder);
+    return placeholder;
+  }
+
+  /** Intended only for a trusted, in-memory execution boundary. */
+  restoreText(value: string): string {
+    let restored = value;
+    for (const [original, placeholder] of this.values) {
+      restored = restored.replaceAll(placeholder, original);
+    }
+    return restored;
+  }
 }
 
 export interface SafetyPolicyConfig {
@@ -77,6 +109,12 @@ export interface SafetyPolicyConfig {
   injection: {
     blockOn: Severity[];
   };
+
+  /** Optional confidence gate for generic credential assignments. */
+  unknownSecretDetection?: {
+    enabled?: boolean;
+    minConfidence?: number;
+  };
 }
 
 export const DEFAULT_POLICY_CONFIG: SafetyPolicyConfig = {
@@ -101,6 +139,11 @@ export const DEFAULT_POLICY_CONFIG: SafetyPolicyConfig = {
   injection: {
     blockOn: ["critical", "high"],
   },
+
+  unknownSecretDetection: {
+    enabled: true,
+    minConfidence: 0.2,
+  },
 };
 
 export interface SafetyFindingSummary {
@@ -113,6 +156,8 @@ export interface SafetyCheckResult {
   decision: "ALLOW" | "BLOCK";
   reason: string;
   redactedPrompt: string;
+  /** Safe for the LLM, but intentionally not persisted. */
+  executionPrompt: string;
   wasRedacted: boolean;
 
   /**
@@ -255,6 +300,10 @@ export class SafetyMiddleware {
       prompt,
       redactionFindings,
     );
+    const executionPrompt = this.vaultForExecution(
+      prompt,
+      redactionFindings,
+    );
 
     return {
       decision,
@@ -263,6 +312,7 @@ export class SafetyMiddleware {
         injectionFindings,
       ),
       redactedPrompt,
+      executionPrompt,
       wasRedacted: redactedPrompt !== prompt,
 
       // Expose metadata only, never matched text.
@@ -341,14 +391,31 @@ export class SafetyMiddleware {
           ) {
             continue;
           }
+
+          if (
+            pattern.id === "generic-secret-assignment" &&
+            !this.isLikelyUnknownSecret(capturedValue)
+          ) {
+            continue;
+          }
         }
+
+        const capturedValue = match[1];
+        const captureOffset =
+          pattern.id === "generic-secret-assignment" && capturedValue
+            ? match[0].lastIndexOf(capturedValue)
+            : 0;
+        const start = match.index + captureOffset;
+        const end = capturedValue
+          ? start + capturedValue.length
+          : match.index + match[0].length;
 
         findings.push({
           id: pattern.id,
           category: "secret",
           severity: pattern.severity,
-          start: match.index,
-          end: match.index + match[0].length,
+          start,
+          end,
           replacement: REDACTED_SECRET,
         });
       }
@@ -408,6 +475,20 @@ export class SafetyMiddleware {
           continue;
         }
 
+        // The loose phone matcher may identify the final numeric segment of
+        // a UUID as a phone number. UUIDs are application identifiers, not
+        // PII by themselves, so never partially redact one as a phone.
+        if (
+          pattern.id === "phone-number" &&
+          this.overlapsUuid(
+            prompt,
+            match.index,
+            match.index + match[0].length,
+          )
+        ) {
+          continue;
+        }
+
         findings.push({
           id: pattern.id,
           category: "pii",
@@ -420,6 +501,19 @@ export class SafetyMiddleware {
     }
 
     return findings;
+  }
+
+  private overlapsUuid(
+    prompt: string,
+    start: number,
+    end: number,
+  ): boolean {
+    for (const uuid of prompt.matchAll(UUID_TOKEN)) {
+      if (uuid.index === undefined) continue;
+      const uuidEnd = uuid.index + uuid[0].length;
+      if (start < uuidEnd && end > uuid.index) return true;
+    }
+    return false;
   }
 
   private detectPromptInjection(
@@ -486,6 +580,30 @@ export class SafetyMiddleware {
     return this.redact(value, findings);
   }
 
+  private isLikelyUnknownSecret(value: string): boolean {
+    const detector = this.config.unknownSecretDetection;
+    if (detector?.enabled === false) return true;
+
+    return secretConfidence(value) >= (detector?.minConfidence ?? 0.2);
+  }
+
+  private vaultForExecution(
+    prompt: string,
+    findings: Finding[],
+  ): string {
+    const vault = new SafetyVault();
+    const selected = this.selectNonOverlapping(findings);
+    let result = prompt;
+
+    for (const finding of [...selected].sort((left, right) => right.start - left.start)) {
+      const kind = finding.category === "pii" ? "PII" : "SECRET";
+      const original = prompt.slice(finding.start, finding.end);
+      result = result.slice(0, finding.start) + vault.replace(original, kind) + result.slice(finding.end);
+    }
+
+    return result;
+  }
+
   private redact(
     prompt: string,
     findings: Finding[],
@@ -501,20 +619,7 @@ export class SafetyMiddleware {
     // more-specific match un-redacted. Sorting by (start ascending, length
     // descending) and greedily keeping only non-overlapping spans is the
     // standard fix for this class of bug.
-    const bySelectionOrder = [...findings].sort((left, right) => {
-      if (left.start !== right.start) return left.start - right.start;
-      return (right.end - right.start) - (left.end - left.start);
-    });
-
-    const kept: Finding[] = [];
-    let cursor = 0;
-    for (const finding of bySelectionOrder) {
-      if (finding.start < cursor) {
-        continue; // overlaps a span already claimed by an earlier, longer/earlier-starting match
-      }
-      kept.push(finding);
-      cursor = finding.end;
-    }
+    const kept = this.selectNonOverlapping(findings);
 
     // Now apply the kept, non-overlapping findings. Splicing must happen
     // right-to-left so replacing one span doesn't shift the offsets of
@@ -531,5 +636,21 @@ export class SafetyMiddleware {
     }
 
     return result;
+  }
+
+  private selectNonOverlapping(findings: Finding[]): Finding[] {
+    const bySelectionOrder = [...findings].sort((left, right) => {
+      if (left.start !== right.start) return left.start - right.start;
+      return (right.end - right.start) - (left.end - left.start);
+    });
+
+    const kept: Finding[] = [];
+    let cursor = 0;
+    for (const finding of bySelectionOrder) {
+      if (finding.start < cursor) continue;
+      kept.push(finding);
+      cursor = finding.end;
+    }
+    return kept;
   }
 }

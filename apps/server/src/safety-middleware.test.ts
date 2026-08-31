@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  SafetyVault,
   SafetyMiddleware,
   type SafetyPolicyConfig,
 } from "./safety-middleware.js";
+import { secretConfidence } from "./secret-confidence.js";
 
 const defaultConfig: SafetyPolicyConfig = {
   redactionEnabled: true,
@@ -85,6 +87,50 @@ const bearerToken =
   ].join(" ");
 
 describe("SafetyMiddleware", () => {
+  describe("vault-backed execution prompts", () => {
+    it("uses opaque placeholders for execution while retaining stable trace redaction", async () => {
+      const secret = ["sk", "abcdefghijklmnopqrstuvwxyz123456"].join("-");
+      const result = await new SafetyMiddleware().evaluate(`Use ${secret}.`);
+
+      expect(result.redactedPrompt).toContain("[REDACTED_SECRET]");
+      expect(result.redactedPrompt).not.toContain(secret);
+      expect(result.executionPrompt).toContain("[PRIVATE_SECRET_");
+      expect(result.executionPrompt).not.toContain(secret);
+    });
+
+    it("keeps vault restoration in memory only", () => {
+      const vault = new SafetyVault();
+      const placeholder = vault.replace("temporary-value");
+
+      expect(placeholder).toContain("[PRIVATE_SECRET_");
+      expect(vault.restoreText(`Use ${placeholder}`)).toBe("Use temporary-value");
+    });
+  });
+
+  describe("unknown secret confidence", () => {
+    it("suppresses UUID, Git SHA, and ordinary Base64 look-alikes", () => {
+      expect(secretConfidence("550e8400-e29b-41d4-a716-446655440000")).toBe(0);
+      expect(secretConfidence("d3486ae9136e7856bc42212385ea797094475802")).toBe(0);
+      expect(secretConfidence("QmFzZTY0RW5jb2RlZEJ1dE5vdFNlY3JldA==")).toBeLessThan(0.2);
+    });
+
+    it("applies the confidence gate to unknown credential assignments", async () => {
+      const candidate = "aB3dE5fG7hJ9kL2mN4pQ";
+      const result = await new SafetyMiddleware({
+        ...defaultConfig,
+        unknownSecretDetection: { minConfidence: 0.2 },
+      }).evaluate(`ARK_API_KEY=${candidate}`);
+
+      expect(result.redactedPrompt).not.toContain(candidate);
+      expect(result.redactedPrompt).toContain("ARK_API_KEY=[REDACTED_SECRET]");
+      expect(result.executionPrompt).toContain("ARK_API_KEY=[PRIVATE_SECRET_");
+      expect(result.findings).toContainEqual(expect.objectContaining({
+        id: "generic-secret-assignment",
+        category: "secret",
+      }));
+    });
+  });
+
   describe("basic policy", () => {
     it("allows a normal prompt", async () => {
       const middleware = new SafetyMiddleware();
@@ -377,6 +423,19 @@ describe("SafetyMiddleware", () => {
   });
 
   describe("PII detection", () => {
+    it("does not mistake a UUID tail for a phone number", async () => {
+      const uuid = "550e8400-e29b-41d4-a716-446655440000";
+      const prompt = `API_KEY=${uuid}`;
+      const result = await new SafetyMiddleware().evaluate(prompt);
+
+      expect(result.wasRedacted).toBe(false);
+      expect(result.redactedPrompt).toBe(prompt);
+      expect(result.findings).not.toContainEqual(expect.objectContaining({
+        id: "phone-number",
+        category: "pii",
+      }));
+    });
+
     it("redacts email addresses by default", async () => {
       const email = [
         "alice",

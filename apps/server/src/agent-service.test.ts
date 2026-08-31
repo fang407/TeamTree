@@ -339,7 +339,7 @@ describe("Agent lifecycle", () => {
     });
   });
 
-  it("passes the original prompt to the runner when an allowed prompt contains a secret", async () => {
+  it("passes opaque placeholders to the runner when an allowed prompt contains a secret", async () => {
     let receivedPrompt: string | undefined;
 
     const runner: AgentRunner = {
@@ -377,9 +377,9 @@ describe("Agent lifecycle", () => {
       .poll(() => service.getRun(run.id).status)
       .toBe("completed");
 
-    // Redaction protects observability.
-    // Execution still receives the original prompt.
-    expect(receivedPrompt).toBe(prompt);
+    // Neither persistence nor the LLM/Runner prompt receives inline secrets.
+    expect(receivedPrompt).not.toContain(secret);
+    expect(receivedPrompt).toContain("[PRIVATE_SECRET_");
 
     const events =
       service.getSafetyEvents(run.id);

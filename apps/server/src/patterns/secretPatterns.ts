@@ -176,7 +176,7 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     // Fixes the original middleware's \b-before-"secret" bug, which missed
     // underscore-joined names like client_secret / db_password.
     regex:
-      /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key|secret|password|passwd|pwd|auth[_-]?token)\b\s*[:=]\s*["']?([A-Za-z0-9_\-/+.=]{8,})["']?/gi,
+      /\b(?:(?:[a-z][a-z0-9_]*_)?api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key|secret|password|passwd|pwd|auth[_-]?token)\b\s*[:=]\s*["']?([A-Za-z0-9_\-/+.=]{8,})["']?/gi,
     severity: "medium",
     entropyThreshold: 3.0,
   },
