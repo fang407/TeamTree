@@ -728,5 +728,70 @@ describe("Agent lifecycle", () => {
     expect(storedRun.error).not.toContain(secret);
     expect(storedRun.error).toContain("[REDACTED_SECRET]");
   });
-  
+
+  describe("secret signature collection", () => {
+    it("records a structural signature for an explicit user-declared secret", async () => {
+      const service = await makeService();
+      const agent = await service.createAgent({ name: "Signature Collection" });
+
+      const { run } = await service.sendMessage(agent.id, "Use this value.", {
+        API_KEY: "aB3dE5fG7hJ9kL2mN4pQ",
+      });
+      await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+      const [signature] = service.getSecretSignatures();
+      expect(signature).toMatchObject({
+        length: 20,
+        hasUpper: true,
+        hasLower: true,
+        hasDigit: true,
+        hasSymbol: false,
+        occurrences: 1,
+      });
+
+      // Never persists the raw value — only its shape.
+      expect(JSON.stringify(signature)).not.toContain("aB3dE5fG7hJ9kL2mN4pQ");
+    });
+
+    it("increments occurrences instead of duplicating a repeated shape", async () => {
+      const service = await makeService();
+      const first = await service.createAgent({ name: "Repeat Signature A" });
+      const second = await service.createAgent({ name: "Repeat Signature B" });
+      const third = await service.createAgent({ name: "Repeat Signature C" });
+
+      const runA = await service.sendMessage(first.id, "First.", {
+        API_KEY: "sameShapeValue0000",
+      });
+      const runB = await service.sendMessage(second.id, "Second.", {
+        API_KEY: "differentShapeVal11",
+      });
+      const runC = await service.sendMessage(third.id, "Third.", {
+        API_KEY: "sameShapeValue1111",
+      });
+
+      await expect.poll(() => service.getRun(runA.run.id).status).toBe("completed");
+      await expect.poll(() => service.getRun(runB.run.id).status).toBe("completed");
+      await expect.poll(() => service.getRun(runC.run.id).status).toBe("completed");
+
+      // Two distinct shapes recorded, not three separate rows — the two
+      // 18-char alnum-lowercase+digit values collapse into one entry.
+      expect(
+        service.getSecretSignatures().reduce((sum, s) => sum + s.occurrences, 0),
+      ).toBe(3);
+      expect(service.getSecretSignatures().length).toBe(2);
+      expect(
+        service.getSecretSignatures().find((s) => s.length === 18)?.occurrences,
+      ).toBe(2);
+    });
+
+    it("never records anything when no secrets are supplied", async () => {
+      const service = await makeService();
+      const agent = await service.createAgent({ name: "No Secrets" });
+
+      const { run } = await service.sendMessage(agent.id, "Just a normal prompt.");
+      await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+      expect(service.getSecretSignatures()).toEqual([]);
+    });
+  });
 });
