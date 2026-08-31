@@ -8,13 +8,14 @@ import type {
   AgentRun,
   AgentRunner,
   CreateAgentInput,
+  LearnedSecretPatternRecord,
   Message,
   SafetyEvent,
   SecretSignatureRecord,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
-import { SafetyMiddleware, type SafetyCheckResult, type ComplianceFramework } from "./safety-middleware.js";
+import { SafetyMiddleware, type SafetyCheckResult, type ComplianceFramework, learnedSecretPatternId } from "./safety-middleware.js";
 import { extractSecretSignature } from "./utils/textUtils.js";
 
 const now = () => new Date().toISOString();
@@ -69,6 +70,12 @@ export class AgentService {
         }
       }
     });
+
+    // Re-register patterns learned in a previous run — only the declared
+    // name and a length bound are needed, nothing sensitive to rehydrate.
+    for (const learned of this.store.snapshot().learnedSecretPatterns) {
+      this.safetyMiddleware.learnSecretPattern(learned.name, learned.minValueLength);
+    }
   }
 
   listAgents(): Agent[] {
@@ -204,15 +211,15 @@ export class AgentService {
   private async recordSecretSignatures(
     secrets: Record<string, string>,
   ): Promise<void> {
-    const values = Object.values(secrets).filter((value) => value.length > 0);
-    if (values.length === 0) return;
+    const entries = Object.entries(secrets).filter(([, value]) => value.length > 0);
+    if (entries.length === 0) return;
 
     const timestamp = now();
 
     await this.store.mutate((database) => {
-      for (const value of values) {
+      for (const [name, value] of entries) {
         const signature = extractSecretSignature(value);
-        const existing = database.secretSignatures.find(
+        const existingSignature = database.secretSignatures.find(
           (record) =>
             record.length === signature.length &&
             record.entropy === signature.entropy &&
@@ -222,9 +229,9 @@ export class AgentService {
             record.hasSymbol === signature.hasSymbol,
         );
 
-        if (existing) {
-          existing.occurrences += 1;
-          existing.lastSeenAt = timestamp;
+        if (existingSignature) {
+          existingSignature.occurrences += 1;
+          existingSignature.lastSeenAt = timestamp;
         } else {
           database.secretSignatures.push({
             id: randomUUID(),
@@ -234,8 +241,42 @@ export class AgentService {
             lastSeenAt: timestamp,
           });
         }
+
+        // Auto-promote a detection rule keyed on the declared NAME (not
+        // the value's characters) — see SafetyMiddleware.learnSecretPattern
+        // for why this is safe to do without a human audit step.
+        this.safetyMiddleware.learnSecretPattern(name, value.length);
+
+        const learnedId = learnedSecretPatternId(name);
+        const existingLearned = database.learnedSecretPatterns.find(
+          (record) => record.id === learnedId,
+        );
+
+        if (existingLearned) {
+          existingLearned.occurrences += 1;
+          existingLearned.lastSeenAt = timestamp;
+          existingLearned.minValueLength = Math.min(
+            existingLearned.minValueLength,
+            value.length,
+          );
+        } else {
+          database.learnedSecretPatterns.push({
+            id: learnedId,
+            name,
+            minValueLength: value.length,
+            occurrences: 1,
+            firstSeenAt: timestamp,
+            lastSeenAt: timestamp,
+          });
+        }
       }
     });
+  }
+
+  getLearnedSecretPatterns(): LearnedSecretPatternRecord[] {
+    return this.store
+      .snapshot()
+      .learnedSecretPatterns.sort((left, right) => right.occurrences - left.occurrences);
   }
 
   async sendMessage(

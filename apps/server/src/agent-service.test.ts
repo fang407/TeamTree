@@ -794,4 +794,131 @@ describe("Agent lifecycle", () => {
       expect(service.getSecretSignatures()).toEqual([]);
     });
   });
+
+  describe("learned secret patterns", () => {
+    it("auto-promotes a detection rule from a declared secret name, no audit needed", async () => {
+      const service = await makeService();
+      const agent = await service.createAgent({ name: "Learn From Declared Secret" });
+
+      const { run } = await service.sendMessage(
+        agent.id,
+        "Please use the value below.",
+        { MY_CUSTOM_TOKEN: "z".repeat(24) },
+      );
+      await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+      const patterns = service.getLearnedSecretPatterns();
+      expect(patterns).toHaveLength(1);
+      expect(patterns[0]).toMatchObject({
+        id: "learned-my-custom-token",
+        name: "MY_CUSTOM_TOKEN",
+        occurrences: 1,
+      });
+
+      // Never persists the raw value anywhere in the record.
+      expect(JSON.stringify(patterns)).not.toContain("z".repeat(24));
+    });
+
+    it("a subsequent, unrelated message now has that name auto-redacted", async () => {
+      const service = await makeService();
+      const declare = await service.createAgent({ name: "Declare Once" });
+      const reuse = await service.createAgent({ name: "Reuse Later" });
+
+      const declared = "z".repeat(24);
+      const { run: declareRun } = await service.sendMessage(
+        declare.id,
+        "Set this up.",
+        { MY_CUSTOM_TOKEN: declared },
+      );
+      await expect.poll(() => service.getRun(declareRun.id).status).toBe("completed");
+
+      // A completely different agent, no secrets panel used this time —
+      // just the name appearing in plain prompt text — should now be
+      // caught, because the pattern was learned globally, not per-agent.
+      const { run: reuseRun } = await service.sendMessage(
+        reuse.id,
+        `Here is the value again: MY_CUSTOM_TOKEN=${declared}xyz`,
+      );
+      await expect.poll(() => service.getRun(reuseRun.id).status).toBe("completed");
+
+      const storedPrompt = service.getRun(reuseRun.id).prompt;
+      expect(storedPrompt).not.toContain(declared);
+      expect(storedPrompt).toContain("MY_CUSTOM_TOKEN=[REDACTED_SECRET]");
+    });
+
+    it("declaring the same secret name again increments occurrences, not duplicates", async () => {
+      const service = await makeService();
+      const first = await service.createAgent({ name: "Declare A" });
+      const second = await service.createAgent({ name: "Declare B" });
+
+      const { run: runA } = await service.sendMessage(first.id, "First.", {
+        MY_CUSTOM_TOKEN: "z".repeat(24),
+      });
+      await expect.poll(() => service.getRun(runA.id).status).toBe("completed");
+
+      const { run: runB } = await service.sendMessage(second.id, "Second.", {
+        MY_CUSTOM_TOKEN: "z".repeat(30),
+      });
+      await expect.poll(() => service.getRun(runB.id).status).toBe("completed");
+
+      const patterns = service.getLearnedSecretPatterns();
+      expect(patterns).toHaveLength(1);
+      expect(patterns[0]?.occurrences).toBe(2);
+    });
+
+    it("survives a server restart: a fresh SafetyMiddleware re-learns persisted patterns on initialize()", async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
+      temporaryDirectories.push(root);
+      const dbPath = path.join(root, "data", "db.json");
+
+      const config = loadConfig({
+        NODE_ENV: "test",
+        APP_DATA_DIR: path.join(root, "data"),
+        AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+        CODEX_HOME: path.join(root, "codex"),
+        ARK_API_KEY: "test-key",
+        ARK_MODEL: "ep-test",
+      });
+
+      // "Before restart": declare a secret through a real service instance.
+      const before = new AgentService(
+        config,
+        new JsonStore(dbPath),
+        new WorkspaceManager(path.join(root, "workspaces")),
+        new FakeRunner(),
+        new SafetyMiddleware(),
+      );
+      await before.initialize();
+      const agent = await before.createAgent({ name: "Before Restart" });
+      const { run } = await before.sendMessage(agent.id, "Set it up.", {
+        MY_CUSTOM_TOKEN: "z".repeat(24),
+      });
+      await expect.poll(() => before.getRun(run.id).status).toBe("completed");
+
+      // "After restart": a brand-new SafetyMiddleware (no in-memory state
+      // carried over — this is the whole point of the test) pointed at the
+      // SAME on-disk store. If hydration works, this new instance should
+      // catch the previously-declared name without ever being told again.
+      const freshMiddleware = new SafetyMiddleware();
+      const after = new AgentService(
+        config,
+        new JsonStore(dbPath),
+        new WorkspaceManager(path.join(root, "workspaces")),
+        new FakeRunner(),
+        freshMiddleware,
+      );
+      await after.initialize(); // this is where hydration must happen
+
+      const agent2 = await after.createAgent({ name: "After Restart" });
+      const { run: run2 } = await after.sendMessage(
+        agent2.id,
+        `Reusing it: MY_CUSTOM_TOKEN=${"z".repeat(24)}extra`,
+      );
+      await expect.poll(() => after.getRun(run2.id).status).toBe("completed");
+
+      const storedPrompt = after.getRun(run2.id).prompt;
+      expect(storedPrompt).not.toContain("z".repeat(24));
+      expect(storedPrompt).toContain("MY_CUSTOM_TOKEN=[REDACTED_SECRET]");
+    });
+  });
 });

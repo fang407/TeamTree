@@ -195,6 +195,10 @@ export async function createApp(
     signatures: service.getSecretSignatures(),
   }));
 
+  app.get("/api/learned-secret-patterns", async () => ({
+    patterns: service.getLearnedSecretPatterns(),
+  }));
+
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
   app.post(

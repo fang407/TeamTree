@@ -16,6 +16,10 @@ import {
   type PiiSeverity,
 } from "./patterns/compliancePatterns.js";
 
+export function learnedSecretPatternId(name: string): string {
+  return "learned-" + name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
 export type { ComplianceFramework };
 
 import {
@@ -168,10 +172,66 @@ export interface SafetyCheckResult {
 }
 
 export class SafetyMiddleware {
+  /**
+   * Secret-detection rules auto-generated from user-declared "Run secret"
+   * names (see learnSecretPattern). Kept separate from the hand-curated
+   * SECRET_PATTERNS collection so provenance stays obvious — anything in
+   * here was auto-derived from a specific deployment's declared secrets,
+   * not reviewed/written by a person. Both are checked in detectSecrets().
+   */
+  private learnedPatterns: SecretPattern[] = [];
+
   constructor(
     private config: SafetyPolicyConfig =
       DEFAULT_POLICY_CONFIG,
   ) {}
+
+  /**
+   * Auto-registers a detection rule for a user-declared secret name (e.g.
+   * "STRIPE_SECRET_KEY" from the Run Secrets panel). No audit gate is
+   * needed here — unlike inferring from free-text prompts, the user has
+   * already told us, explicitly, that this name identifies a secret.
+   *
+   * Deliberately keyed on the NAME, not the value's characters: a pattern
+   * derived from one company's literal secret value might not generalize
+   * (and worse, could start matching unrelated content elsewhere), but a
+   * pattern that only fires on that exact declared keyword can't misfire
+   * on anything else — it's either a hit on that specific name, or nothing.
+   * Only the value's length is used, as a numeric bound; the value itself
+   * is never retained.
+   */
+  learnSecretPattern(name: string, observedValueLength: number): void {
+    const id = learnedSecretPatternId(name);
+
+    if (this.learnedPatterns.some((pattern) => pattern.id === id)) {
+      return; // already learned this exact name
+    }
+
+    const minLength = Math.max(4, Math.min(observedValueLength, 8192));
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    this.learnedPatterns.push({
+      id,
+      description: "Learned: declared secret \"" + name + "\"",
+      regex: new RegExp(
+        "\\b" +
+          escapedName +
+          "\\s*[:=]\\s*[\"']?([A-Za-z0-9_\\-/+.=]{" +
+          minLength +
+          ",})[\"']?",
+        "gi",
+      ),
+      severity: "high",
+    });
+  }
+
+  /** Read-only view for persistence — see agent-service.ts. */
+  listLearnedSecretPatterns(): Pick<SecretPattern, "id" | "description">[] {
+    return this.learnedPatterns.map(({ id, description }) => ({
+      id,
+      description,
+    }));
+  }
 
   /**
    * Snapshot of the currently active policy. Returned deep-ish (arrays
@@ -378,9 +438,23 @@ export class SafetyMiddleware {
     const findings: Finding[] = [];
 
     for (
-      const pattern of SECRET_PATTERNS as SecretPattern[]
+      const pattern of [...SECRET_PATTERNS, ...this.learnedPatterns] as SecretPattern[]
     ) {
-      for (const match of prompt.matchAll(pattern.regex)) {
+      // Ensure the "d" flag is present so match.indices gives the EXACT
+      // start/end of the captured group (group 1), not just the whole
+      // match. Without this, a pattern with a keyword prefix before its
+      // capture group (e.g. "aws...(<40-char key>)", or any learned
+      // pattern) redacts the wrong span — starting at the keyword instead
+      // of the actual secret, and ending too early, leaving part of the
+      // real secret exposed in plaintext. This bug was previously papered
+      // over for exactly one pattern id ("generic-secret-assignment") via
+      // a fragile lastIndexOf guess; this fixes it generically for every
+      // pattern, current and future, without a per-pattern special case.
+      const regexWithIndices = pattern.regex.flags.includes("d")
+        ? pattern.regex
+        : new RegExp(pattern.regex.source, pattern.regex.flags + "d");
+
+      for (const match of prompt.matchAll(regexWithIndices)) {
         if (match.index === undefined) {
           continue;
         }
@@ -407,14 +481,16 @@ export class SafetyMiddleware {
         }
 
         const capturedValue = match[1];
-        const captureOffset =
-          pattern.id === "generic-secret-assignment" && capturedValue
-            ? match[0].lastIndexOf(capturedValue)
-            : 0;
-        const start = match.index + captureOffset;
-        const end = capturedValue
-          ? start + capturedValue.length
-          : match.index + match[0].length;
+        const capturedIndices = (
+          match as RegExpMatchArray & {
+            indices?: Array<[number, number]>;
+          }
+        ).indices?.[1];
+
+        const [start, end] =
+          capturedValue && capturedIndices
+            ? capturedIndices
+            : [match.index, match.index + match[0].length];
 
         findings.push({
           id: pattern.id,

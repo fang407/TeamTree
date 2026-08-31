@@ -8,10 +8,22 @@ const availablePatterns = [
   { id: "us-ssn", description: "US SSN", severity: "high", frameworks: ["HIPAA", "CCPA"] },
 ];
 
+const sampleLearnedPatterns = [
+  {
+    id: "learned-stripe-secret-key",
+    name: "STRIPE_SECRET_KEY",
+    minValueLength: 24,
+    occurrences: 2,
+    firstSeenAt: "2026-08-30T00:00:00.000Z",
+    lastSeenAt: "2026-08-31T00:00:00.000Z",
+  },
+];
+
 const service = {
   listAgents: () => [],
   systemInfo: async () => ({}),
   getSafetyEvents: () => [],
+  getLearnedSecretPatterns: () => sampleLearnedPatterns,
   getRedactionConfig: () => ({
     redactionEnabled: true,
     complianceFrameworks: ["GDPR", "CCPA"],
@@ -361,6 +373,25 @@ describe("HTTP boundary", () => {
       disabledPatternIds: [],
       availablePatterns,
     });
+    await app.close();
+  });
+
+  it("returns the learned secret patterns collection, never a raw secret value", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/learned-secret-patterns",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ patterns: sampleLearnedPatterns });
+
+    // Guard against a future change accidentally adding a raw-value field.
+    const [pattern] = response.json().patterns;
+    expect(Object.keys(pattern).sort()).toEqual(
+      ["id", "name", "minValueLength", "occurrences", "firstSeenAt", "lastSeenAt"].sort(),
+    );
     await app.close();
   });
 
