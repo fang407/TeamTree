@@ -82,8 +82,18 @@ type SecretPreset = {
 
 const secretPresets: SecretPreset[] = [
   { name: "AWS deploy", keys: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] },
+  { name: "Google Cloud", keys: ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"] },
+  { name: "Azure", keys: ["AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID"] },
   { name: "GitHub", keys: ["GITHUB_TOKEN"] },
+  { name: "GitLab", keys: ["GITLAB_TOKEN"] },
   { name: "NPM", keys: ["NPM_TOKEN"] },
+  { name: "OpenAI", keys: ["OPENAI_API_KEY"] },
+  { name: "Anthropic", keys: ["ANTHROPIC_API_KEY"] },
+  { name: "Hugging Face", keys: ["HF_TOKEN"] },
+  { name: "Stripe", keys: ["STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY"] },
+  { name: "Slack", keys: ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"] },
+  { name: "Database", keys: ["DATABASE_URL", "DB_USERNAME", "DB_PASSWORD"] },
+  { name: "Generic credentials", keys: ["API_KEY", "API_SECRET", "USERNAME", "PASSWORD"] },
 ];
 
 const secretNamePattern = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -979,7 +989,7 @@ export default function App() {
                         })}
                         aria-label={`Move secret ${index + 1} down`}
                       >↓</button>
-                      {secret.classification === "secret" && <button
+                      {secret.classification === "secret" ? <button
                         className="button button-ghost secret-toggle"
                         type="button"
                         onClick={() =>
@@ -996,7 +1006,7 @@ export default function App() {
                         aria-label={secret.visible ? "Hide secret value" : "Show secret value"}
                       >
                         {secret.visible ? "Hide" : "Show"}
-                      </button>}
+                      </button> : <span className="secret-toggle-placeholder" aria-hidden="true" />}
                       <button
                         className="button button-ghost secret-remove"
                         type="button"

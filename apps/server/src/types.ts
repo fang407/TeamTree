@@ -24,6 +24,12 @@ export interface SafetyEvent {
   boundary: SafetyBoundary;
   decision: SafetyDecision;
   reason: string;
+  /** Safe rule metadata only; never includes prompt text or secret values. */
+  metadata?: {
+    findingIds?: string[];
+    findingCategories?: string[];
+    secretNames?: string[];
+  };
   timestamp: string;
 }
 

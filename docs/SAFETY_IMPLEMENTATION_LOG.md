@@ -135,3 +135,33 @@ raw prompts, credentials, vault mappings, or CredData samples.
 
 - `npm run typecheck` completed successfully.
 - `npm run build -w @launchpad/web` completed successfully.
+
+## 2026-08-31 - Hackathon demo and repository handoff
+
+### Added / updated
+
+- `docs/HACKATHON_DEMO.md`
+- `README.md`
+
+### Change
+
+- Added a three-minute live-demo runbook with a real normal Agent Run, a
+  prompt-injection denial case, and an optional fake-secret redaction case.
+- Added repository setup, architecture, automated-evidence, limitations, and
+  no-secrets guidance for judges and teammates.
+- Corrected the README's outdated statement that the POC has no tracing or
+  audit middleware.
+
+## 2026-08-31 - README safety middleware overview
+
+### Updated
+
+- `README.md`
+
+### Change
+
+- Embedded a concise safety middleware overview in the repository homepage:
+  problem, architecture, design decisions, verification commands, scope, and
+  no-secrets policy.
+- Deliberately excluded the time-coded demo script and copy/paste prompts;
+  those remain in `docs/HACKATHON_DEMO.md`.
