@@ -1,3 +1,5 @@
+import type { SecretSignature } from "./utils/textUtils.js";
+
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 
 export type RunStatus =
@@ -74,12 +76,20 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export interface SecretSignatureRecord extends SecretSignature {
+  id: string;
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
 export interface Database {
   version: 1;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
   safetyEvents: SafetyEvent[];
+  secretSignatures: SecretSignatureRecord[];
 }
 
 export interface CreateAgentInput {

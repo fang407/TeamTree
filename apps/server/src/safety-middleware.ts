@@ -296,13 +296,19 @@ export class SafetyMiddleware {
         finding.category !== "prompt_injection",
     );
 
+    // Resolved once: both redact() and vaultForExecution() need the same
+    // non-overlapping selection over the same findings, so compute it a
+    // single time here instead of having each function re-derive an
+    // identical result independently.
+    const selectedRedactionFindings = this.selectNonOverlapping(redactionFindings);
+
     const redactedPrompt = this.redact(
       prompt,
-      redactionFindings,
+      selectedRedactionFindings,
     );
     const executionPrompt = this.vaultForExecution(
       prompt,
-      redactionFindings,
+      selectedRedactionFindings,
     );
 
     return {
@@ -589,10 +595,11 @@ export class SafetyMiddleware {
 
   private vaultForExecution(
     prompt: string,
-    findings: Finding[],
+    selected: Finding[],
   ): string {
+    if (selected.length === 0) return prompt;
+
     const vault = new SafetyVault();
-    const selected = this.selectNonOverlapping(findings);
     let result = prompt;
 
     for (const finding of [...selected].sort((left, right) => right.start - left.start)) {
@@ -606,25 +613,20 @@ export class SafetyMiddleware {
 
   private redact(
     prompt: string,
-    findings: Finding[],
+    selected: Finding[],
   ): string {
+    if (selected.length === 0) return prompt;
+
     let result = prompt;
 
-    // Selecting which findings to keep must happen left-to-right and must
-    // prefer the longer match when spans start at the same point or one
-    // contains another — otherwise a small pattern nested inside a larger
-    // one (e.g. a "phone number"-shaped digit run inside a Slack token,
-    // which is a real overlap once PII detection runs alongside secret
-    // detection) can silently steal the redaction and leave the outer,
-    // more-specific match un-redacted. Sorting by (start ascending, length
-    // descending) and greedily keeping only non-overlapping spans is the
-    // standard fix for this class of bug.
-    const kept = this.selectNonOverlapping(findings);
-
-    // Now apply the kept, non-overlapping findings. Splicing must happen
-    // right-to-left so replacing one span doesn't shift the offsets of
-    // spans that occur earlier in the text.
-    const byApplicationOrder = [...kept].sort(
+    // Findings passed in here must already be resolved to a
+    // non-overlapping set (see selectNonOverlapping) — this function only
+    // applies replacements, it doesn't decide which findings win when
+    // spans overlap.
+    //
+    // Splicing must happen right-to-left so replacing one span doesn't
+    // shift the offsets of spans that occur earlier in the text.
+    const byApplicationOrder = [...selected].sort(
       (left, right) => right.start - left.start,
     );
 
