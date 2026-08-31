@@ -191,6 +191,10 @@ export async function createApp(
     },
   );
 
+  app.get("/api/secret-signatures", async () => ({
+    signatures: service.getSecretSignatures(),
+  }));
+
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
   app.post(

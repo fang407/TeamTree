@@ -10,10 +10,12 @@ import type {
   CreateAgentInput,
   Message,
   SafetyEvent,
+  SecretSignatureRecord,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { SafetyMiddleware, type SafetyCheckResult, type ComplianceFramework } from "./safety-middleware.js";
+import { extractSecretSignature } from "./utils/textUtils.js";
 
 const now = () => new Date().toISOString();
 
@@ -187,6 +189,60 @@ export class AgentService {
       .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
   }
 
+  getSecretSignatures(): SecretSignatureRecord[] {
+    return this.store
+      .snapshot()
+      .secretSignatures.sort((left, right) => right.occurrences - left.occurrences);
+  }
+
+  /**
+   * Grows the secret-pattern collection from explicit, user-declared
+   * secrets (the "Run secrets" panel) — never from free-text prompt
+   * content. The person has already told us these are secrets, so unlike
+   * inferring from a prompt, no confidence scoring or human audit gate is
+   * needed for *this* source: only the structural shape is persisted
+   * (length, entropy, character classes), never the value itself. Repeat
+   * sightings of the same shape increment a counter instead of adding
+   * duplicate rows, so this stays small regardless of how often the same
+   * secret is reused across runs.
+   */
+  private async recordSecretSignatures(
+    secrets: Record<string, string>,
+  ): Promise<void> {
+    const values = Object.values(secrets).filter((value) => value.length > 0);
+    if (values.length === 0) return;
+
+    const timestamp = now();
+
+    await this.store.mutate((database) => {
+      for (const value of values) {
+        const signature = extractSecretSignature(value);
+        const existing = database.secretSignatures.find(
+          (record) =>
+            record.length === signature.length &&
+            record.entropy === signature.entropy &&
+            record.hasUpper === signature.hasUpper &&
+            record.hasLower === signature.hasLower &&
+            record.hasDigit === signature.hasDigit &&
+            record.hasSymbol === signature.hasSymbol,
+        );
+
+        if (existing) {
+          existing.occurrences += 1;
+          existing.lastSeenAt = timestamp;
+        } else {
+          database.secretSignatures.push({
+            id: randomUUID(),
+            ...signature,
+            occurrences: 1,
+            firstSeenAt: timestamp,
+            lastSeenAt: timestamp,
+          });
+        }
+      }
+    });
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
@@ -198,6 +254,13 @@ export class AgentService {
         "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
       );
     }
+    // Independent of prompt evaluation below — this only ever reads from
+    // explicit, user-declared secrets, never from prompt text. Awaited
+    // (not fire-and-forget) since it's a single cheap store mutation, the
+    // same cost class as the "mark agent busy" mutation just below — but
+    // guarded so a recording failure can never break the actual send.
+    await this.recordSecretSignatures(secrets).catch(() => undefined);
+
     const timestamp = now();
     const runId = randomUUID();
 
@@ -347,10 +410,9 @@ export class AgentService {
       });
 
     try {
-      if (this.cancellationRequests.has(agentAtStart.id)) {
-        throw new RunCancelledError();
-      }
-
+      // Cheap check (Set.has is O(1)): skip the rest of this run entirely
+      // if a cancellation arrived while the "running" status update above
+      // was in flight.
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
@@ -407,6 +469,16 @@ export class AgentService {
         reason: safetyResult.reason,
         metadata: this.auditMetadata(safetyResult.findings, secrets),
       });
+
+      // Second cheap check, placed right before the expensive step
+      // (spawning the actual Codex process, possibly in a container).
+      // The awaits above (safety event writes) are a real window where a
+      // cancellation could arrive — this is where skipping actually saves
+      // meaningful cost, unlike re-checking immediately after the first
+      // check with no work in between.
+      if (this.cancellationRequests.has(agentAtStart.id)) {
+        throw new RunCancelledError();
+      }
 
       const result = await this.runner.run({
         agentId: agentAtStart.id,

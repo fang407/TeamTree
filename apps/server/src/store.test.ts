@@ -53,4 +53,20 @@ describe("JsonStore", () => {
       "queue recovered",
     ]);
   });
+
+  it("initializes secretSignatures as empty for a database created before it existed", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const dbPath = path.join(root, "db.json");
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      dbPath,
+      JSON.stringify({ version: 1, agents: [], messages: [], runs: [], safetyEvents: [] }),
+    );
+
+    const store = new JsonStore(dbPath);
+    await store.initialize();
+
+    expect(store.snapshot().secretSignatures).toEqual([]);
+  });
 });

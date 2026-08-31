@@ -90,3 +90,31 @@ export function passesAbaRoutingChecksum(candidate: string): boolean {
   }
   return sum % 10 === 0;
 }
+
+export interface SecretSignature {
+  length: number;
+  entropy: number;
+  hasUpper: boolean;
+  hasLower: boolean;
+  hasDigit: boolean;
+  hasSymbol: boolean;
+}
+
+/**
+ * Reduces a secret value to its structural shape only — never the value
+ * itself. The caller must not retain `value` after calling this; the
+ * signature is what's safe to persist for growing the pattern collection
+ * from user-declared secrets (the "Run secrets" panel), where the person
+ * has already told us it's a secret — no confidence scoring needed, unlike
+ * inferring from free-text prompts.
+ */
+export function extractSecretSignature(value: string): SecretSignature {
+  return {
+    length: value.length,
+    entropy: Math.round(shannonEntropy(value) * 100) / 100,
+    hasUpper: /[A-Z]/.test(value),
+    hasLower: /[a-z]/.test(value),
+    hasDigit: /[0-9]/.test(value),
+    hasSymbol: /[^A-Za-z0-9]/.test(value),
+  };
+}
