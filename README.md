@@ -34,6 +34,65 @@ Volcengine ECS.
 - Safety middleware for redaction, prompt-injection blocking, Runner lifecycle
   events, and a visible safety dashboard
 
+## Hackathon safety middleware
+
+### Problem
+
+An Agent can receive credentials, personal data, or malicious instructions
+before a user can understand what the system will do with them. This project
+adds a real backend/runtime middleware boundary that makes those decisions
+safer and visible: it redacts sensitive values, blocks high-risk prompt
+injection, records Runner outcomes, and displays an auditable timeline.
+
+### Design
+
+```mermaid
+flowchart LR
+    User[User prompt] --> API[Fastify API]
+    API --> Service[AgentService + SafetyMiddleware]
+    Service -->|safe trace and events| Store[(JSON store)]
+    Service -->|opaque placeholders| Runner[CodexRunner / ContainerCodexRunner]
+    Values[Run Values] -->|temporary environment variables| Runner
+    Runner -->|ALLOW / BLOCK / CANCELLED| Service
+    Service --> Dashboard[Safety dashboard]
+```
+
+- **Detection and policy:** provider-secret, generic credential, PII, and
+  prompt-injection rules run before execution.
+- **Vault-backed protection:** matched inline values are persisted as stable
+  redaction markers and reach the LLM only as opaque placeholders.
+- **False-positive guardrails:** Shannon entropy plus an offline logistic score
+  support generic credential detection; UUIDs, Git SHA values, and ordinary
+  Base64 are suppressed.
+- **Execution boundary:** local and container Runners emit start, timeout,
+  cancellation, and output-limit safety events.
+- **Dashboard:** the UI displays a status badge and real event timeline with
+  boundary, decision, reason, and timestamp, without showing original secrets.
+
+### Verify the implementation
+
+```bash
+npm run typecheck
+npm run test
+npm run build -w @launchpad/web
+```
+
+Automated tests cover redaction, injection blocking, Vault placeholders,
+classifier look-alikes, UUID false-positive regression, safe persistence,
+Runner events, cancellation, timeout, and output limits.
+
+### Scope and no-secrets policy
+
+This remains a single-user hackathon POC, not a production compliance or
+security program. Pattern matching and a small offline classifier reduce risk
+but cannot identify every sensitive value. Never commit `.env` files, API
+keys, private keys, tokens, or Vault mappings; use fake provider-shaped values
+in tests and use **Run Values** with `$VALUE_NAME` for temporary runtime
+credentials.
+
+For detailed setup, architecture rationale, limitations, and the live-demo
+runbook, see [Hackathon demo and repository handoff](docs/HACKATHON_DEMO.md).
+
 ## Requirements
 
 - Node.js 22+
