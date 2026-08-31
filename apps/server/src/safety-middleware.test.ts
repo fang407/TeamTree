@@ -420,6 +420,94 @@ describe("SafetyMiddleware", () => {
         result.redactedPrompt,
       ).not.toContain(bearerToken);
     });
+
+    it("REGRESSION: fully redacts an AWS secret access key with a keyword prefix, leaking no trailing characters", async () => {
+      // aws-secret-access-key has a keyword prefix ("aws...") before its
+      // 40-char capture group. Previously, the redaction span was computed
+      // incorrectly for any pattern like this (anything other than the one
+      // specifically special-cased id "generic-secret-assignment"): it
+      // started at the keyword instead of the actual secret, and ended too
+      // early, leaving part of the real secret exposed after "redaction".
+      const awsSecretKey =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN"; // 40 chars, high entropy, clears entropyThreshold
+      const prompt = `aws secret key = ${awsSecretKey} (rotate soon)`;
+
+      const result = await new SafetyMiddleware().evaluate(prompt);
+
+      expect(result.wasRedacted).toBe(true);
+      // The full captured value must be gone — not just a prefix of it.
+      expect(result.redactedPrompt).not.toContain(awsSecretKey);
+      expect(result.redactedPrompt).not.toContain("GHIJKLMN");
+      // The keyword itself is not sensitive and may remain for context —
+      // only the actual secret value must disappear.
+      expect(result.redactedPrompt).toContain("aws secret key");
+      expect(result.redactedPrompt).toContain("[REDACTED_SECRET]");
+      expect(result.redactedPrompt).toContain("(rotate soon)");
+    });
+  });
+
+  describe("learned secret patterns (from user-declared 'Run secrets')", () => {
+    it("does not flag an undeclared name before it has been learned", async () => {
+      const middleware = new SafetyMiddleware();
+      const value = "z".repeat(24);
+
+      const before = await middleware.evaluate(`MY_CUSTOM_TOKEN=${value}`);
+      expect(before.wasRedacted).toBe(false);
+    });
+
+    it("fully redacts a declared secret's value once learned, without leaking trailing characters", async () => {
+      const middleware = new SafetyMiddleware();
+      const declaredValue = "z".repeat(24);
+      middleware.learnSecretPattern("MY_CUSTOM_TOKEN", declaredValue.length);
+
+      // A later sighting can be longer than what was originally declared —
+      // the pattern uses a minimum length, not an exact one.
+      const laterValue = "z".repeat(24) + "extra";
+      const result = await middleware.evaluate(
+        `Here's my token: MY_CUSTOM_TOKEN=${laterValue} for the API.`,
+      );
+
+      expect(result.wasRedacted).toBe(true);
+      expect(result.redactedPrompt).not.toContain(laterValue);
+      expect(result.redactedPrompt).not.toContain("extra");
+      expect(result.redactedPrompt).toContain("MY_CUSTOM_TOKEN=[REDACTED_SECRET]");
+      expect(result.redactedPrompt).toContain("for the API.");
+
+      const [finding] = result.findings.filter(
+        (item) => item.category === "secret",
+      );
+      expect(finding).toMatchObject({
+        id: "learned-my-custom-token",
+        category: "secret",
+        severity: "high",
+      });
+    });
+
+    it("does not affect an unrelated, undeclared variable name", async () => {
+      const middleware = new SafetyMiddleware();
+      const value = "z".repeat(24);
+      middleware.learnSecretPattern("MY_CUSTOM_TOKEN", value.length);
+
+      const result = await middleware.evaluate(`OTHER_VAR=${value}`);
+      expect(result.wasRedacted).toBe(false);
+    });
+
+    it("learning the same name twice does not register a duplicate pattern", () => {
+      const middleware = new SafetyMiddleware();
+      middleware.learnSecretPattern("MY_CUSTOM_TOKEN", 20);
+      middleware.learnSecretPattern("MY_CUSTOM_TOKEN", 30);
+
+      const learned = middleware.listLearnedSecretPatterns();
+      expect(learned.filter((p) => p.id === "learned-my-custom-token").length).toBe(1);
+    });
+
+    it("normalizes the declared name into a stable, safe pattern id", () => {
+      const middleware = new SafetyMiddleware();
+      middleware.learnSecretPattern("STRIPE_SECRET_KEY", 20);
+
+      const learned = middleware.listLearnedSecretPatterns();
+      expect(learned.some((p) => p.id === "learned-stripe-secret-key")).toBe(true);
+    });
   });
 
   describe("PII detection", () => {

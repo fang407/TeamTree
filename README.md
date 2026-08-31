@@ -56,17 +56,22 @@ flowchart LR
 ### Main decisions
 
 - **API / Service:** provider-secret, generic credential, PII, and
-  prompt-injection rules are evaluated before a Runner is started.
+  prompt-injection rules are evaluated before a Runner is started. PII rules
+  are also tagged by compliance frameworks.
 - **Vault-backed inline protection:** inline matched values become
   `[REDACTED_SECRET]` or `[REDACTED_PII]` in persistence and an opaque
   `[PRIVATE_…]` placeholder in the LLM execution prompt.
 - **Offline confidence score:** generic credential assignments use Shannon
   entropy plus a local logistic-regression score. UUIDs, Git SHA values, and
   ordinary Base64 are suppressed to reduce false positives.
-- **Runner boundary:** both local and container runners emit start, timeout,
+- **Pattern collection and auto-promotion from declared secrets:** declaring
+  a secret's name auto-registers a detection rule for that
+  name, catching it in any future prompt from any agent.
+- **Runner boundary:** both local and container runners emit timeout,
   cancellation, and output-limit decisions.
 - **Dashboard:** the UI polls real run and safety-event data, showing status,
-  decision, boundary, reason, and timestamp. It does not display original
+  decision, boundary, reason, and timestamp, and includes a redaction-settings
+  control for the compliance toggles above. It does not display original
   secrets.
 
 ## 4. Automated evidence
@@ -83,9 +88,15 @@ Relevant automated coverage includes:
 
 - known secret and PII redaction;
 - prompt-injection blocking;
-- Vault placeholder and in-memory restoration behavior;
+- Vault placeholder generation for both the persisted trace and the LLM
+  execution prompt;
 - classifier suppression for UUID, Git SHA, and ordinary Base64;
 - UUID-versus-phone-number false-positive regression;
+- framework-scoped PII enable/disable and per-pattern overrides via the
+  redaction-config API;
+- secret-signature collection and name-keyed pattern auto-promotion for
+  declared secrets (structural shape and rule persisted, raw values never
+  retained);
 - AgentService persistence and Runner-input redaction;
 - Runner success, timeout, user cancellation, failed process, and output-limit
   safety events.
@@ -99,9 +110,20 @@ Relevant automated coverage includes:
   that arbitrary text is or is not sensitive.
 - The classifier is local and offline; no external ML model is called at
   runtime. It is fast, but it is not continuously retrained.
+- Enabling a compliance framework (GDPR, HIPAA, CCPA, PCI DSS) turns on the
+  identifier patterns associated with it. It does not verify or certify that
+  the product complies with that framework — meeting a real regulation also
+  requires legal, contractual, and organizational measures this tool cannot
+  provide.
+- The vault's restoration method is implemented and unit-tested but is not
+  currently invoked by any Runner path.
 - Run Values are a temporary runtime-variable channel. Their `Secret` and
   `Non-secret` UI classifications do not currently create different backend
   delivery policies; neither is a bypass for prompt safety.
+- Auto-promoted patterns are scoped to the exact declared secret name, so a
+  rule can't misfire on unrelated content even when a name doesn't
+  generalize across deployments; the structural shape-collection side still
+  requires a person to turn a recurring shape into a broader pattern.
 - The dashboard is polling-based rather than a real-time streaming channel.
 - Container controls reduce blast radius but do not replace production
   authentication, authorization, secret management, monitoring, or a formal
@@ -112,12 +134,14 @@ Relevant automated coverage includes:
 ## 6. Related implementation files
 
 - `apps/server/src/safety-middleware.ts` — rules, policy, redaction, Vault
-  placeholder generation.
+  placeholder generation, and the runtime redaction-configuration API.
 - `apps/server/src/secret-confidence.ts` — local logistic score.
 - `apps/server/src/patterns/` — secret, PII/compliance, and injection rules.
-- `apps/server/src/agent-service.ts` — persistence and safe Runner handoff.
+- `apps/server/src/agent-service.ts` — persistence, safe Runner handoff, and
+  the backing logic for the redaction-config and secret-signature endpoints.
 - `apps/server/src/codex-runner.ts` and `container-codex-runner.ts` — Runner
   events and execution controls.
-- `apps/web/src/components/SafetyStatus.tsx`, `SafetyEvents.tsx`, and
-  `RunControls.tsx` — dashboard UI.
+- `apps/web/src/components/SafetyStatus.tsx`, `SafetyEvents.tsx`,
+  `RunControls.tsx`, and `RedactionSettings.tsx` — dashboard UI, including the
+  compliance-framework and per-pattern redaction controls.
 - `apps/server/src/*test.ts` — automated evidence.

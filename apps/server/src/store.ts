@@ -9,6 +9,7 @@ const emptyDatabase = (): Database => ({
   runs: [],
   safetyEvents: [],
   secretSignatures: [],
+  learnedSecretPatterns: [],
 });
 
 export class JsonStore {
@@ -35,6 +36,12 @@ export class JsonStore {
       // signature collection existed.
       if (!Array.isArray(parsed.secretSignatures)) {
         parsed.secretSignatures = [];
+      }
+
+      // Backward compatibility for databases created before learned
+      // secret patterns existed.
+      if (!Array.isArray(parsed.learnedSecretPatterns)) {
+        parsed.learnedSecretPatterns = [];
       }
 
       this.data = parsed;

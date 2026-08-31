@@ -89,6 +89,24 @@ export interface SecretSignatureRecord extends SecretSignature {
   lastSeenAt: string;
 }
 
+/**
+ * A secret-detection rule auto-generated from a user-declared "Run secret"
+ * name (e.g. STRIPE_SECRET_KEY). Persisted so it survives a restart and is
+ * re-registered into the running SafetyMiddleware on startup. Stores only
+ * the declared name and a length bound derived from the value that was
+ * seen — never the value itself. The regex is reconstructed from these
+ * fields on load, not serialized directly, so there's a single source of
+ * truth for how it's built (see SafetyMiddleware.learnSecretPattern).
+ */
+export interface LearnedSecretPatternRecord {
+  id: string;
+  name: string;
+  minValueLength: number;
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
 export interface Database {
   version: 1;
   agents: Agent[];
@@ -96,6 +114,7 @@ export interface Database {
   runs: AgentRun[];
   safetyEvents: SafetyEvent[];
   secretSignatures: SecretSignatureRecord[];
+  learnedSecretPatterns: LearnedSecretPatternRecord[];
 }
 
 export interface CreateAgentInput {
