@@ -16,6 +16,30 @@
  * bar — this is the same technique Gitleaks uses to suppress false
  * positives on generic/keyword-based rules (e.g. AWS's own docs example
  * key AKIAIOSFODNN7EXAMPLE has low entropy and gets filtered).
+ *
+ * ── GROWTH POLICY (read before adding a new pattern) ──────────────────────
+ * Every regex here runs on every message evaluate() processes. A single
+ * badly-shaped regex (nested unbounded quantifiers, e.g. (a+)+) is a real
+ * availability risk: we measured 28 characters hanging a matching call for
+ * 11+ seconds. Two rules for adding new detection coverage:
+ *
+ * 1. If the secret has a keyword-assignment context (appears as
+ *    `SOME_NAME=value` or `"some_name": "value"`), prefer extending
+ *    secret-confidence.ts's known-prefix handling instead of writing a new
+ *    bespoke regex. The classifier's scoring is arithmetic (a dot product
+ *    and a sigmoid) — it has zero backtracking risk by construction,
+ *    because it isn't a regex at all. This is the actual reason the
+ *    classifier matters for safety here: not that it protects patterns
+ *    that already exist, but that it keeps the count of hand-written
+ *    regexes needing their own ReDoS audit from growing with every new
+ *    provider anyone wants to catch.
+ * 2. Only add a new dedicated regex here for secrets with a fixed,
+ *    context-free, bare token format (no assignment keyword to key off
+ *    of — e.g. AKIA-prefixed AWS keys). Keep any new regex free of nested
+ *    quantifiers, and confirm it passes redos-guard.test.ts (which runs
+ *    every pattern here against adversarial input) before merging — that
+ *    test is the actual technical control; this comment is what tells you
+ *    when you need it.
  */
 
 export type SecretSeverity = "low" | "medium" | "high" | "critical";

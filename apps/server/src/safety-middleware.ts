@@ -20,6 +20,35 @@ export function learnedSecretPatternId(name: string): string {
   return "learned-" + name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
+/**
+ * Builds the exact SecretPattern a declared "Run secret" name turns into.
+ * Extracted as its own exported function — not left inline inside
+ * learnSecretPattern() — specifically so redos-guard.test.ts can exercise
+ * the REAL construction logic directly, rather than a hand-duplicated
+ * copy that could silently drift from what actually ships.
+ */
+export function buildLearnedSecretPattern(
+  name: string,
+  observedValueLength: number,
+): SecretPattern {
+  const minLength = Math.max(4, Math.min(observedValueLength, 8192));
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  return {
+    id: learnedSecretPatternId(name),
+    description: "Learned: declared secret \"" + name + "\"",
+    regex: new RegExp(
+      "\\b" +
+        escapedName +
+        "\\s*[:=]\\s*[\"']?([A-Za-z0-9_\\-/+.=]{" +
+        minLength +
+        ",})[\"']?",
+      "gi",
+    ),
+    severity: "high",
+  };
+}
+
 export type { ComplianceFramework };
 
 import {
@@ -207,22 +236,7 @@ export class SafetyMiddleware {
       return; // already learned this exact name
     }
 
-    const minLength = Math.max(4, Math.min(observedValueLength, 8192));
-    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-    this.learnedPatterns.push({
-      id,
-      description: "Learned: declared secret \"" + name + "\"",
-      regex: new RegExp(
-        "\\b" +
-          escapedName +
-          "\\s*[:=]\\s*[\"']?([A-Za-z0-9_\\-/+.=]{" +
-          minLength +
-          ",})[\"']?",
-        "gi",
-      ),
-      severity: "high",
-    });
+    this.learnedPatterns.push(buildLearnedSecretPattern(name, observedValueLength));
   }
 
   /** Read-only view for persistence — see agent-service.ts. */
